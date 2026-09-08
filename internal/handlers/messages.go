@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/routatic/proxy/internal/cacheusage"
 	"github.com/routatic/proxy/internal/client"
 	"github.com/routatic/proxy/internal/config"
 	"github.com/routatic/proxy/internal/core"
@@ -68,6 +69,7 @@ type responseWriter struct {
 		outputTokens             int
 		cacheReadInputTokens     int
 		cacheCreationInputTokens int
+		cacheUsageReported       bool
 	}
 }
 
@@ -123,11 +125,13 @@ func (w *responseWriter) extractUsageFromSSE(b []byte) {
 	if idx := strings.Index(data, `"cache_read_input_tokens":`); idx != -1 {
 		if val, err := parseIntAfter(data, idx+len(`"cache_read_input_tokens":`)); err == nil {
 			w.usage.cacheReadInputTokens = val
+			w.usage.cacheUsageReported = true
 		}
 	}
 	if idx := strings.Index(data, `"cache_creation_input_tokens":`); idx != -1 {
 		if val, err := parseIntAfter(data, idx+len(`"cache_creation_input_tokens":`)); err == nil {
 			w.usage.cacheCreationInputTokens = val
+			w.usage.cacheUsageReported = true
 		}
 	}
 
@@ -189,6 +193,31 @@ func (w *responseWriter) getOutputTokens() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.usage.outputTokens
+}
+
+func (w *responseWriter) cacheUsage() cacheusage.Usage {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return cacheusage.Usage{
+		ReadTokens:     int64(w.usage.cacheReadInputTokens),
+		CreationTokens: int64(w.usage.cacheCreationInputTokens),
+		Reported:       w.usage.cacheUsageReported,
+	}
+}
+
+func cacheUsageFromResponse(body []byte, response types.MessageResponse) cacheusage.Usage {
+	var payload struct {
+		Usage map[string]json.RawMessage `json:"usage"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	_, readReported := payload.Usage["cache_read_input_tokens"]
+	_, creationReported := payload.Usage["cache_creation_input_tokens"]
+
+	return cacheusage.Usage{
+		ReadTokens:     int64(response.Usage.CacheReadInputTokens),
+		CreationTokens: int64(response.Usage.CacheCreationInputTokens),
+		Reported:       readReported || creationReported,
+	}
 }
 
 // parseIntAfter parses an integer value starting at the given position in the string.
@@ -747,7 +776,9 @@ func (h *MessagesHandler) handleStreaming(
 			cancelAttempt()
 			latency := time.Since(streamStart)
 			modelKey := metrics.ModelKey(model.Provider, model.ModelID)
+			cache := rw.cacheUsage()
 			h.metrics.RecordSuccess(modelKey, latency)
+			h.metrics.RecordCacheUsage(cache)
 			h.metrics.RecordStage(metrics.StageUpstream, latency)
 			if firstContentAt := rw.firstContentTime(); !firstContentAt.IsZero() {
 				h.metrics.RecordTTFT(firstContentAt.Sub(requestStart))
@@ -769,6 +800,7 @@ func (h *MessagesHandler) handleStreaming(
 				Duration:     latency,
 				InputTokens:  rw.usage.inputTokens,
 				OutputTokens: rw.usage.outputTokens,
+				CacheUsage:   cache,
 				Streaming:    true,
 				Success:      true,
 				Attempt:      1, // streaming fallback attempts not yet tracked in record; treat as primary
@@ -1358,11 +1390,14 @@ func (h *MessagesHandler) handleNonStreaming(
 	}
 
 	var inputTokens, outputTokens int
+	cache := cacheusage.Usage{}
 	var msgResp types.MessageResponse
 	if errUnmarshal := json.Unmarshal(responseBody, &msgResp); errUnmarshal == nil {
 		inputTokens = msgResp.Usage.InputTokens
 		outputTokens = msgResp.Usage.OutputTokens
+		cache = cacheUsageFromResponse(responseBody, msgResp)
 	}
+	h.metrics.RecordCacheUsage(cache)
 
 	rec := history.RequestRecord{
 		ID:           requestID,
@@ -1373,6 +1408,7 @@ func (h *MessagesHandler) handleNonStreaming(
 		Duration:     latency,
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
+		CacheUsage:   cache,
 		Streaming:    false,
 		Success:      true,
 		Attempt:      result.Attempted,

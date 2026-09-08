@@ -1,7 +1,11 @@
 // Package history maintains an in-memory ring buffer of recent proxy requests.
 package history
 
-import "time"
+import (
+	"time"
+
+	"github.com/routatic/proxy/internal/cacheusage"
+)
 
 // RequestRecord holds metadata for a single completed proxy request.
 type RequestRecord struct {
@@ -13,8 +17,9 @@ type RequestRecord struct {
 	Duration     time.Duration // total latency
 	InputTokens  int           // input tokens from SSE usage event
 	OutputTokens int           // output tokens from SSE usage event
-	Streaming    bool          // whether this was a streaming request
-	Success      bool          // whether it completed successfully
-	ErrorMsg     string        // error message if failed
-	Attempt      int           // attempt number in fallback chain (1 = primary, >1 = fallback)
+	CacheUsage   cacheusage.Usage
+	Streaming    bool   // whether this was a streaming request
+	Success      bool   // whether it completed successfully
+	ErrorMsg     string // error message if failed
+	Attempt      int    // attempt number in fallback chain (1 = primary, >1 = fallback)
 }

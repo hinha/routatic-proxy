@@ -25,6 +25,9 @@ const TRANSLATIONS = {
     'th.scenario': 'Scenario',
     'th.inputTokens': 'Input Tokens',
     'th.outputTokens': 'Output Tokens',
+    'th.cacheRead': 'Cache Hit',
+    'th.cacheCreated': 'Cache Miss/Created',
+    'th.cacheRate': 'Cache Rate',
     'th.duration': 'Duration',
     'th.status': 'Status',
     'empty.noHistory': 'No history yet',
@@ -84,6 +87,14 @@ const TRANSLATIONS = {
     'perf.th.p90': 'P90',
     'perf.th.p99': 'P99',
     'perf.empty': 'No performance data',
+    'analytics.cacheRead': 'Cache Hit Tokens',
+    'analytics.cacheCreated': 'Cache Miss/Created',
+    'analytics.cacheRate': 'Cache Rate',
+    'analytics.cacheTable': 'Cache Usage by Model',
+    'analytics.today': 'Today',
+    'analytics.last7': 'Last 7 days',
+    'analytics.last30': 'Last 30 days',
+    'analytics.last90': 'Last 90 days',
     'setting.backup': 'Backup Configuration',
     'setting.backupDesc': 'Export current config as JSON file',
     'setting.restore': 'Restore Configuration',
@@ -143,6 +154,9 @@ const TRANSLATIONS = {
     'th.scenario': '场景',
     'th.inputTokens': '输入 Token',
     'th.outputTokens': '输出 Token',
+    'th.cacheRead': '缓存命中',
+    'th.cacheCreated': '缓存未命中/创建',
+    'th.cacheRate': '缓存率',
     'th.duration': '耗时',
     'th.status': '状态',
     'empty.noHistory': '暂无历史请求',
@@ -218,6 +232,14 @@ const TRANSLATIONS = {
     'perf.th.p90': 'P90',
     'perf.th.p99': 'P99',
     'perf.empty': '暂无性能数据',
+    'analytics.cacheRead': '缓存命中 Token',
+    'analytics.cacheCreated': '缓存未命中/创建',
+    'analytics.cacheRate': '缓存率',
+    'analytics.cacheTable': '按模型统计缓存使用',
+    'analytics.today': '今天',
+    'analytics.last7': '最近 7 天',
+    'analytics.last30': '最近 30 天',
+    'analytics.last90': '最近 90 天',
     'setting.backup': '备份配置',
     'setting.backupDesc': '导出当前配置为 JSON 文件',
     'setting.restore': '恢复配置',
@@ -533,7 +555,7 @@ function renderHistory() {
     filtered.length + t('status.count') + (currentFilter ? t('status.filtered') : '');
 
   if (filtered.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">' + t('empty.noHistory') + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty-state">' + t('empty.noHistory') + '</td></tr>';
     return;
   }
 
@@ -547,6 +569,9 @@ function renderHistory() {
       <td><span class="badge badge-scene">${escapeHtml(h.scenario) || '—'}</span></td>
       <td>${h.input_tokens != null ? h.input_tokens.toLocaleString() : '—'}</td>
       <td>${h.output_tokens != null ? h.output_tokens.toLocaleString() : '—'}</td>
+      <td>${h.cache_read_input_tokens != null ? h.cache_read_input_tokens.toLocaleString() : '—'}</td>
+      <td>${h.cache_creation_input_tokens != null ? h.cache_creation_input_tokens.toLocaleString() : '—'}</td>
+      <td>${formatCacheRate(h.cache_rate)}</td>
       <td>${fmtDuration(h.duration_ms)}</td>
       <td><span class="badge ${h.success ? 'badge-success' : 'badge-error'}">${h.success ? t('badge.success') : t('badge.fail')}</span></td>
     </tr>
@@ -954,6 +979,18 @@ function showHistoryDetail(record) {
       <span class="detail-value">${record.output_tokens != null ? record.output_tokens.toLocaleString() : '—'}</span>
     </div>
     <div class="detail-row">
+      <span class="detail-label">Cache Hit Tokens</span>
+      <span class="detail-value">${record.cache_read_input_tokens != null ? record.cache_read_input_tokens.toLocaleString() : '—'}</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-label">Cache Miss/Created Tokens</span>
+      <span class="detail-value">${record.cache_creation_input_tokens != null ? record.cache_creation_input_tokens.toLocaleString() : '—'}</span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-label">Cache Rate</span>
+      <span class="detail-value">${formatCacheRate(record.cache_rate)}</span>
+    </div>
+    <div class="detail-row">
       <span class="detail-label">Duration</span>
       <span class="detail-value">${fmtDuration(record.duration_ms)}</span>
     </div>
@@ -963,6 +1000,10 @@ function showHistoryDetail(record) {
     </div>
   `;
   modal.classList.add('visible');
+}
+
+function formatCacheRate(value) {
+  return value == null || !Number.isFinite(Number(value)) ? '—' : (Number(value) * 100).toFixed(1) + '%';
 }
 
 function closeHistoryModal() {
@@ -1763,7 +1804,7 @@ const AnalyticsModule = {
     const days = daysEl ? daysEl.value : 30;
     const genEl = document.getElementById('analytics-generated');
     if (genEl) genEl.textContent = '';
-    ['kpi-requests','kpi-tokens','kpi-tokens-in','kpi-tokens-out','kpi-cost','kpi-p95'].forEach(id => {
+    ['kpi-requests','kpi-tokens','kpi-tokens-in','kpi-tokens-out','kpi-cost','kpi-p95','kpi-cache-read','kpi-cache-created','kpi-cache-rate'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.textContent = '…';
     });
@@ -1772,9 +1813,9 @@ const AnalyticsModule = {
 
     try {
       const [summaryRes, trendRes, latencyRes] = await Promise.all([
-        fetch(`/api/analytics/summary?days=${days}`),
-        fetch(`/api/analytics/tokens/trend?days=${days}`),
-        fetch(`/api/analytics/latency?days=${days}`)
+        fetch(`/api/analytics/summary?${days === 'today' ? 'range=today' : `days=${days}`}`),
+        fetch(`/api/analytics/tokens/trend?${days === 'today' ? 'range=today' : `days=${days}`}`),
+        fetch(`/api/analytics/latency?${days === 'today' ? 'range=today' : `days=${days}`}`)
       ]);
       if (!summaryRes.ok) throw new Error('summary fetch failed');
       const summary = await summaryRes.json();
@@ -1785,6 +1826,7 @@ const AnalyticsModule = {
 
       this.renderKPIs(summary);
       this.renderDonuts(summary);
+      this.renderCacheBreakdown(summary.models || []);
       this.renderTrend(trend.trend || []);
       if (genEl) {
         const ts = summary.generated_at ? new Date(summary.generated_at) : new Date();
@@ -1822,6 +1864,9 @@ const AnalyticsModule = {
       p95Val = Math.round(avg) + ' ms';
     }
     document.getElementById('kpi-p95').textContent = p95Val;
+    document.getElementById('kpi-cache-read').textContent = fmt(s.cache_read_tokens);
+    document.getElementById('kpi-cache-created').textContent = fmt(s.cache_creation_tokens);
+    document.getElementById('kpi-cache-rate').textContent = formatCacheRate(s.cache_rate);
   },
 
   renderDonuts(summary) {
@@ -1863,6 +1908,25 @@ const AnalyticsModule = {
     wrap.innerHTML = html;
   },
 
+  renderCacheBreakdown(items) {
+    const tbody = document.getElementById('cache-breakdown-tbody');
+    if (!tbody) return;
+    const cacheItems = items.filter(item => Number(item.cache_usage_requests || 0) > 0);
+    if (!cacheItems.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state text-center text-[#98989d] py-6 text-[13px]">No provider cache telemetry</td></tr>';
+      return;
+    }
+    tbody.innerHTML = cacheItems.map(item => `
+      <tr class="border-b border-[#3a3a3c]">
+        <td class="px-3 py-2 text-[#f5f5f7]">${this.escapeHtml(item.model || '—')}</td>
+        <td class="px-3 py-2 text-[#98989d]">${this.escapeHtml(item.provider || '—')}</td>
+        <td class="px-3 py-2 text-right tabular-nums text-[#f5f5f7]">${Number(item.cache_read_tokens || 0).toLocaleString()}</td>
+        <td class="px-3 py-2 text-right tabular-nums text-[#f5f5f7]">${Number(item.cache_creation_tokens || 0).toLocaleString()}</td>
+        <td class="px-3 py-2 text-right tabular-nums text-[#f5f5f7]">${formatCacheRate(item.cache_rate)}</td>
+      </tr>
+    `).join('');
+  },
+
   renderTrend(points) {
     const wrap = document.getElementById('token-trend');
     if (!wrap) return;
@@ -1873,7 +1937,13 @@ const AnalyticsModule = {
     }
 
     const w = 620, h = 188, pad = 30;
-    const maxV = Math.max(1, ...points.map(p => Math.max(p.input_tokens||0, p.output_tokens||0)));
+    const cacheAvailable = points.some(p => Number(p.cache_usage_requests || 0) > 0);
+    const maxV = Math.max(1, ...points.map(p => Math.max(
+      p.input_tokens || 0,
+      p.output_tokens || 0,
+      cacheAvailable ? (p.cache_read_tokens || 0) : 0,
+      cacheAvailable ? (p.cache_creation_tokens || 0) : 0
+    )));
     const stepX = (w - pad*2) / Math.max(1, points.length - 1);
 
     const ptsIn = points.map((p,i) => {
@@ -1886,9 +1956,21 @@ const AnalyticsModule = {
       const y = h - pad - (p.output_tokens||0)/maxV * (h - pad*2);
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     });
+    const ptsCacheRead = points.map((p,i) => {
+      const x = pad + i*stepX;
+      const y = h - pad - (p.cache_read_tokens||0)/maxV * (h - pad*2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+    const ptsCacheCreated = points.map((p,i) => {
+      const x = pad + i*stepX;
+      const y = h - pad - (p.cache_creation_tokens||0)/maxV * (h - pad*2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
 
     const pathIn = 'M' + ptsIn.join(' L');
     const pathOut = 'M' + ptsOut.join(' L');
+    const pathCacheRead = 'M' + ptsCacheRead.join(' L');
+    const pathCacheCreated = 'M' + ptsCacheCreated.join(' L');
     const areaIn = pathIn + ` L${(pad + (points.length-1)*stepX).toFixed(1)},${h-pad} L${pad},${h-pad} Z`;
     const areaOut = pathOut + ` L${(pad + (points.length-1)*stepX).toFixed(1)},${h-pad} L${pad},${h-pad} Z`;
 
@@ -1896,7 +1978,12 @@ const AnalyticsModule = {
       const x = (pad + i*stepX).toFixed(1);
       const yIn = (h - pad - (p.input_tokens||0)/maxV*(h-pad*2)).toFixed(1);
       const yOut = (h - pad - (p.output_tokens||0)/maxV*(h-pad*2)).toFixed(1);
-      return `<circle cx="${x}" cy="${yIn}" r="2.2" fill="#3b82f6"/><circle cx="${x}" cy="${yOut}" r="2.2" fill="#10b981"/>`;
+      const yCacheRead = (h - pad - (p.cache_read_tokens||0)/maxV*(h-pad*2)).toFixed(1);
+      const yCacheCreated = (h - pad - (p.cache_creation_tokens||0)/maxV*(h-pad*2)).toFixed(1);
+      const cacheDots = cacheAvailable
+        ? `<circle cx="${x}" cy="${yCacheRead}" r="2.2" fill="#f59e0b"/><circle cx="${x}" cy="${yCacheCreated}" r="2.2" fill="#8b5cf6"/>`
+        : '';
+      return `<circle cx="${x}" cy="${yIn}" r="2.2" fill="#3b82f6"/><circle cx="${x}" cy="${yOut}" r="2.2" fill="#10b981"/>${cacheDots}`;
     }).join('');
 
     const svg = `
@@ -1905,11 +1992,13 @@ const AnalyticsModule = {
         <path d="${areaOut}" fill="#10b981" fill-opacity="0.12"/>
         <path d="${pathIn}" fill="none" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round"/>
         <path d="${pathOut}" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round"/>
+        ${cacheAvailable ? `<path d="${pathCacheRead}" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round"/><path d="${pathCacheCreated}" fill="none" stroke="#8b5cf6" stroke-width="2.5" stroke-linecap="round"/>` : ''}
         ${dots}
       </svg>
       <div class="trend-legend">
         <span><span class="swatch" style="background:#3b82f6;height:3px;width:14px;display:inline-block;border-radius:2px;margin-right:4px;"></span>Input tokens</span>
         <span><span class="swatch" style="background:#10b981;height:3px;width:14px;display:inline-block;border-radius:2px;margin-right:4px;"></span>Output tokens</span>
+        ${cacheAvailable ? '<span><span class="swatch" style="background:#f59e0b;height:3px;width:14px;display:inline-block;border-radius:2px;margin-right:4px;"></span>Cache hit</span><span><span class="swatch" style="background:#8b5cf6;height:3px;width:14px;display:inline-block;border-radius:2px;margin-right:4px;"></span>Cache miss/created</span>' : ''}
       </div>`;
     wrap.innerHTML = svg;
   },
@@ -1919,6 +2008,10 @@ const AnalyticsModule = {
       const el = document.getElementById(id);
       if (el) el.innerHTML = `<div class="empty-state">${msg}</div>`;
     });
+    const cacheTbody = document.getElementById('cache-breakdown-tbody');
+    if (cacheTbody) {
+      cacheTbody.innerHTML = `<tr><td colspan="5" class="empty-state text-center text-[#98989d] py-6 text-[13px]">${msg}</td></tr>`;
+    }
   },
 
   escapeHtml(s) {

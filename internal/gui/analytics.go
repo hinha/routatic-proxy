@@ -78,10 +78,19 @@ func (h *AnalyticsHandler) Summary(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, resp)
 }
 
-// TokenTrend returns daily token/request aggregates.
+// TokenTrend returns daily aggregates for multi-day ranges and hourly
+// aggregates for Today.
 func (h *AnalyticsHandler) TokenTrend(w http.ResponseWriter, r *http.Request) {
 	since, days, period := h.getRange(r)
-	trend, err := h.store.GetDailyTokenTrendSince(since)
+	var (
+		trend []storage.DailyTokenPoint
+		err   error
+	)
+	if period == "today" {
+		trend, err = h.store.GetHourlyTokenTrendSince(since)
+	} else {
+		trend, err = h.store.GetDailyTokenTrendSince(since)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

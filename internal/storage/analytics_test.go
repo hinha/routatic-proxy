@@ -112,3 +112,37 @@ func TestAnalyticsSinceIncludesRequestsFromToday(t *testing.T) {
 		t.Fatalf("TotalRequests = %d, want 1", summary.TotalRequests)
 	}
 }
+
+func TestAnalyticsHourlyTrendGroupsRequestsByHour(t *testing.T) {
+	db := openTestDatabase(t)
+	requests := NewRequests(db)
+	location := time.FixedZone("WIB", 7*60*60)
+	day := time.Date(2026, time.September, 8, 0, 0, 0, 0, location)
+
+	for _, rec := range []history.RequestRecord{
+		{ID: "hour-09-a", Model: "model", StartTime: day.Add(9*time.Hour + 10*time.Minute), InputTokens: 10, Success: true},
+		{ID: "hour-09-b", Model: "model", StartTime: day.Add(9*time.Hour + 45*time.Minute), InputTokens: 20, Success: true},
+		{ID: "hour-10", Model: "model", StartTime: day.Add(10*time.Hour + 5*time.Minute), InputTokens: 30, Success: true},
+	} {
+		if err := requests.Insert(rec); err != nil {
+			t.Fatalf("Insert(%s) error = %v", rec.ID, err)
+		}
+	}
+
+	trend, err := NewAnalytics(db).GetHourlyTokenTrendSince(day)
+	if err != nil {
+		t.Fatalf("GetHourlyTokenTrendSince() error = %v", err)
+	}
+	if len(trend) != 2 {
+		t.Fatalf("hourly trend length = %d, want 2: %+v", len(trend), trend)
+	}
+	if got, want := trend[0].Date, "2026-09-08T09:00:00"; got != want {
+		t.Fatalf("first bucket = %q, want %q", got, want)
+	}
+	if got, want := trend[0].Requests, int64(2); got != want {
+		t.Fatalf("first bucket requests = %d, want %d", got, want)
+	}
+	if got, want := trend[1].Date, "2026-09-08T10:00:00"; got != want {
+		t.Fatalf("second bucket = %q, want %q", got, want)
+	}
+}

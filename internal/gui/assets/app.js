@@ -1804,7 +1804,7 @@ const AnalyticsModule = {
     const days = daysEl ? daysEl.value : 30;
     const genEl = document.getElementById('analytics-generated');
     if (genEl) genEl.textContent = '';
-    ['kpi-requests','kpi-tokens','kpi-tokens-in','kpi-tokens-out','kpi-cost','kpi-p95','kpi-cache-read','kpi-cache-created','kpi-cache-rate'].forEach(id => {
+    ['kpi-requests','kpi-tokens','kpi-tokens-in','kpi-tokens-out','kpi-cache-read','kpi-cache-created','kpi-cache-rate'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.textContent = '…';
     });
@@ -1812,22 +1812,18 @@ const AnalyticsModule = {
     this.showLoading();
 
     try {
-      const [summaryRes, trendRes, latencyRes] = await Promise.all([
+      const [summaryRes, trendRes] = await Promise.all([
         fetch(`/api/analytics/summary?${days === 'today' ? 'range=today' : `days=${days}`}`),
-        fetch(`/api/analytics/tokens/trend?${days === 'today' ? 'range=today' : `days=${days}`}`),
-        fetch(`/api/analytics/latency?${days === 'today' ? 'range=today' : `days=${days}`}`)
+        fetch(`/api/analytics/tokens/trend?${days === 'today' ? 'range=today' : `days=${days}`}`)
       ]);
       if (!summaryRes.ok) throw new Error('summary fetch failed');
       const summary = await summaryRes.json();
       const trend = trendRes.ok ? await trendRes.json() : { trend: [] };
-      const latencyData = latencyRes.ok ? await latencyRes.json() : { stats: [] };
-
-      summary.latency = latencyData;
 
       this.renderKPIs(summary);
       this.renderDonuts(summary);
       this.renderCacheBreakdown(summary.models || []);
-      this.renderTrend(trend.trend || []);
+      this.renderTrend(trend.trend || [], trend.range || (days === 'today' ? 'today' : 'days'));
       if (genEl) {
         const ts = summary.generated_at ? new Date(summary.generated_at) : new Date();
         genEl.textContent = '· ' + ts.toLocaleDateString(undefined, {month:'short', day:'numeric'});
@@ -1854,16 +1850,6 @@ const AnalyticsModule = {
     document.getElementById('kpi-tokens').textContent = fmt(totTok);
     document.getElementById('kpi-tokens-in').textContent = fmt(s.input_tokens);
     document.getElementById('kpi-tokens-out').textContent = fmt(s.output_tokens);
-    const cost = s.est_cost_usd != null ? '$' + Number(s.est_cost_usd).toFixed(2) : '—';
-    document.getElementById('kpi-cost').textContent = cost;
-
-    const stats = (data.latency && data.latency.stats) || [];
-    let p95Val = '—';
-    if (stats.length) {
-      const avg = stats.reduce((a, st) => a + (st.p95_ms || 0), 0) / stats.length;
-      p95Val = Math.round(avg) + ' ms';
-    }
-    document.getElementById('kpi-p95').textContent = p95Val;
     document.getElementById('kpi-cache-read').textContent = fmt(s.cache_read_tokens);
     document.getElementById('kpi-cache-created').textContent = fmt(s.cache_creation_tokens);
     document.getElementById('kpi-cache-rate').textContent = formatCacheRate(s.cache_rate);
@@ -1891,21 +1877,87 @@ const AnalyticsModule = {
     if (otherVal > 0) top.push({name: 'Other', [valKey]: otherVal});
 
     const total = top.reduce((sum,i) => sum + (i[valKey]||0), 0) || 1;
-    let segs = '';
     let off = 0;
     const legend = [];
+    const donutSegments = [];
     top.forEach((it, idx) => {
       const v = it[valKey] || 0;
       const pct = v / total * 100;
       const col = this.palette[idx % this.palette.length];
-      segs += `${col} ${off.toFixed(1)}% ${(off + pct).toFixed(1)}%, `;
       off += pct;
       const label = it.model || it.provider || it.name || 'Unknown';
-      legend.push(`<div class="legend-item"><span class="legend-swatch" style="background:${col}"></span><span class="legend-label">${this.escapeHtml(label)}</span><span class="legend-value">${v}</span></div>`);
+      donutSegments.push(`<circle class="donut-segment" data-index="${idx}" cx="80" cy="80" r="52" pathLength="100" stroke="${col}" stroke-dasharray="${pct.toFixed(3)} ${(100 - pct).toFixed(3)}" stroke-dashoffset="${(-((off - pct) / 100 * 100)).toFixed(3)}" tabindex="0" role="button" aria-label="${this.escapeHtml(`${label}: ${v} ${valKey}`)}"/>`);
+      legend.push(`<button type="button" class="donut-legend-item" data-index="${idx}" aria-label="${this.escapeHtml(`${label}: ${v} ${valKey}`)}"><span class="legend-swatch" style="background:${col}"></span><span class="legend-label">${this.escapeHtml(label)}</span><span class="legend-value">${v}</span><span class="legend-percent">${pct.toFixed(1)}%</span></button>`);
     });
 
-    const html = `<div class="donut-wrapper"><div class="donut" style="--donut-segments: ${segs.slice(0,-2)}"></div><div class="donut-legend">${legend.join('')}</div></div>`;
+    const kind = valKey === 'requests' ? 'requests' : valKey;
+    const html = `<div class="donut-wrapper">
+      <div class="donut-chart-area">
+        <svg class="donut-svg" viewBox="0 0 160 160" role="img" aria-label="Interactive ${this.escapeHtml(kind)} distribution">
+          <circle class="donut-track" cx="80" cy="80" r="52"/>
+          ${donutSegments.join('')}
+        </svg>
+        <div class="donut-center"><strong>${total.toLocaleString()}</strong><span>${this.escapeHtml(kind)}</span></div>
+        <div class="donut-tooltip" role="status" aria-live="polite" hidden></div>
+      </div>
+      <div class="donut-legend" aria-label="Distribution legend">${legend.join('')}</div>
+      <div class="donut-selection" role="region" aria-live="polite" hidden></div>
+    </div>`;
     wrap.innerHTML = html;
+    this.bindDonutInteractions(wrap, top, total, valKey);
+  },
+
+  bindDonutInteractions(wrap, items, total, valKey) {
+    const segments = [...wrap.querySelectorAll('.donut-segment')];
+    const legendItems = [...wrap.querySelectorAll('.donut-legend-item')];
+    const tooltip = wrap.querySelector('.donut-tooltip');
+    const selection = wrap.querySelector('.donut-selection');
+    if (!segments.length || !tooltip) return;
+
+    const valueLabel = valKey === 'requests' ? 'requests' : valKey;
+    const labelFor = item => item.model || item.provider || item.name || 'Unknown';
+    const showItem = index => {
+      const item = items[index];
+      if (!item) return;
+      const value = Number(item[valKey] || 0);
+      const percentage = total > 0 ? value / total * 100 : 0;
+      segments.forEach((segment, segmentIndex) => segment.classList.toggle('is-active', segmentIndex === index));
+      legendItems.forEach((legendItem, legendIndex) => legendItem.classList.toggle('is-active', legendIndex === index));
+      tooltip.innerHTML = `<strong>${this.escapeHtml(labelFor(item))}</strong><span>${value.toLocaleString()} ${this.escapeHtml(valueLabel)} · ${percentage.toFixed(1)}%</span>`;
+      tooltip.hidden = false;
+    };
+    const hideItem = () => {
+      if (document.activeElement && [...segments, ...legendItems].includes(document.activeElement)) return;
+      segments.forEach(segment => segment.classList.remove('is-active'));
+      legendItems.forEach(legendItem => legendItem.classList.remove('is-active'));
+      tooltip.hidden = true;
+    };
+    const selectItem = index => {
+      const item = items[index];
+      if (!item || !selection) return;
+      showItem(index);
+      const value = Number(item[valKey] || 0);
+      const percentage = total > 0 ? value / total * 100 : 0;
+      selection.innerHTML = `<span>Selected ${this.escapeHtml(valKey === 'requests' ? 'model/provider' : valKey)}</span><strong>${this.escapeHtml(labelFor(item))}</strong><em>${value.toLocaleString()} ${this.escapeHtml(valueLabel)} · ${percentage.toFixed(1)}%</em>`;
+      selection.hidden = false;
+    };
+    const wire = (element, index) => {
+      element.addEventListener('pointerenter', () => showItem(index));
+      element.addEventListener('pointerleave', hideItem);
+      element.addEventListener('focus', () => showItem(index));
+      element.addEventListener('blur', event => {
+        if (!wrap.contains(event.relatedTarget)) hideItem();
+      });
+      element.addEventListener('click', () => selectItem(index));
+      element.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          selectItem(index);
+        }
+      });
+    };
+    segments.forEach(wire);
+    legendItems.forEach(wire);
   },
 
   renderCacheBreakdown(items) {
@@ -1927,16 +1979,32 @@ const AnalyticsModule = {
     `).join('');
   },
 
-  renderTrend(points) {
+  formatTrendLabel(value, hourly) {
+    const raw = String(value || '');
+    if (hourly) {
+      const match = raw.match(/T(\d{2}):/);
+      return match ? `${match[1]}:00` : raw.slice(-5);
+    }
+    return raw.length >= 10 ? raw.slice(5, 10).replace('-', '/') : raw;
+  },
+
+  renderTrend(points, range = 'days') {
     const wrap = document.getElementById('token-trend');
     if (!wrap) return;
+    const hourly = range === 'today' || points.some(p => String(p.date || '').includes('T'));
+    const title = document.getElementById('token-trend-title');
+    if (title) title.textContent = hourly ? 'Hourly Token Trend' : 'Daily Token Trend';
     wrap.innerHTML = '';
     if (!points.length) {
       wrap.innerHTML = '<div class="empty-state">No trend data yet. Run some requests to see analytics.</div>';
       return;
     }
 
-    const w = 620, h = 188, pad = 30;
+    const w = 920, h = 286;
+    const pad = { left: 58, right: 24, top: 30, bottom: 50 };
+    const plotBottom = h - pad.bottom;
+    const plotHeight = plotBottom - pad.top;
+    const plotWidth = w - pad.left - pad.right;
     const cacheAvailable = points.some(p => Number(p.cache_usage_requests || 0) > 0);
     const maxV = Math.max(1, ...points.map(p => Math.max(
       p.input_tokens || 0,
@@ -1944,26 +2012,28 @@ const AnalyticsModule = {
       cacheAvailable ? (p.cache_read_tokens || 0) : 0,
       cacheAvailable ? (p.cache_creation_tokens || 0) : 0
     )));
-    const stepX = (w - pad*2) / Math.max(1, points.length - 1);
+    const stepX = plotWidth / Math.max(1, points.length - 1);
+    const xFor = i => points.length === 1 ? pad.left + plotWidth / 2 : pad.left + i * stepX;
+    const yFor = value => plotBottom - (Number(value) || 0) / maxV * plotHeight;
 
     const ptsIn = points.map((p,i) => {
-      const x = pad + i*stepX;
-      const y = h - pad - (p.input_tokens||0)/maxV * (h - pad*2);
+      const x = xFor(i);
+      const y = yFor(p.input_tokens);
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     });
     const ptsOut = points.map((p,i) => {
-      const x = pad + i*stepX;
-      const y = h - pad - (p.output_tokens||0)/maxV * (h - pad*2);
+      const x = xFor(i);
+      const y = yFor(p.output_tokens);
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     });
     const ptsCacheRead = points.map((p,i) => {
-      const x = pad + i*stepX;
-      const y = h - pad - (p.cache_read_tokens||0)/maxV * (h - pad*2);
+      const x = xFor(i);
+      const y = yFor(p.cache_read_tokens);
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     });
     const ptsCacheCreated = points.map((p,i) => {
-      const x = pad + i*stepX;
-      const y = h - pad - (p.cache_creation_tokens||0)/maxV * (h - pad*2);
+      const x = xFor(i);
+      const y = yFor(p.cache_creation_tokens);
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     });
 
@@ -1971,36 +2041,178 @@ const AnalyticsModule = {
     const pathOut = 'M' + ptsOut.join(' L');
     const pathCacheRead = 'M' + ptsCacheRead.join(' L');
     const pathCacheCreated = 'M' + ptsCacheCreated.join(' L');
-    const areaIn = pathIn + ` L${(pad + (points.length-1)*stepX).toFixed(1)},${h-pad} L${pad},${h-pad} Z`;
-    const areaOut = pathOut + ` L${(pad + (points.length-1)*stepX).toFixed(1)},${h-pad} L${pad},${h-pad} Z`;
+    const areaIn = pathIn + ` L${xFor(points.length - 1).toFixed(1)},${plotBottom} L${pad.left},${plotBottom} Z`;
+    const areaOut = pathOut + ` L${xFor(points.length - 1).toFixed(1)},${plotBottom} L${pad.left},${plotBottom} Z`;
+
+    const compact = value => {
+      const n = Number(value) || 0;
+      if (n >= 1000000) return (n / 1000000).toFixed(1).replace('.0', '') + 'M';
+      if (n >= 1000) return (n / 1000).toFixed(1).replace('.0', '') + 'k';
+      return String(Math.round(n));
+    };
+    const grid = Array.from({ length: 5 }, (_, index) => {
+      const ratio = index / 4;
+      const y = pad.top + ratio * plotHeight;
+      const value = maxV * (1 - ratio);
+      return `<line class="trend-grid-line" x1="${pad.left}" y1="${y.toFixed(1)}" x2="${(w - pad.right).toFixed(1)}" y2="${y.toFixed(1)}"/><text class="trend-axis-label" x="${pad.left - 8}" y="${(y + 3).toFixed(1)}" text-anchor="end">${compact(value)}</text>`;
+    }).join('');
+
+    const labelIndexes = new Set([0, points.length - 1]);
+    const labelEvery = Math.max(1, Math.ceil(points.length / 8));
+    for (let i = 0; i < points.length; i += labelEvery) labelIndexes.add(i);
+    const xLabels = [...labelIndexes].sort((a, b) => a - b).map(i => {
+      const anchor = i === 0 ? 'start' : i === points.length - 1 ? 'end' : 'middle';
+      return `<text class="trend-axis-label" x="${xFor(i).toFixed(1)}" y="${h - 12}" text-anchor="${anchor}">${this.escapeHtml(this.formatTrendLabel(points[i].date, hourly))}</text>`;
+    }).join('');
 
     const dots = points.map((p,i) => {
-      const x = (pad + i*stepX).toFixed(1);
-      const yIn = (h - pad - (p.input_tokens||0)/maxV*(h-pad*2)).toFixed(1);
-      const yOut = (h - pad - (p.output_tokens||0)/maxV*(h-pad*2)).toFixed(1);
-      const yCacheRead = (h - pad - (p.cache_read_tokens||0)/maxV*(h-pad*2)).toFixed(1);
-      const yCacheCreated = (h - pad - (p.cache_creation_tokens||0)/maxV*(h-pad*2)).toFixed(1);
+      const x = xFor(i).toFixed(1);
+      const yIn = yFor(p.input_tokens).toFixed(1);
+      const yOut = yFor(p.output_tokens).toFixed(1);
+      const yCacheRead = yFor(p.cache_read_tokens).toFixed(1);
+      const yCacheCreated = yFor(p.cache_creation_tokens).toFixed(1);
       const cacheDots = cacheAvailable
-        ? `<circle cx="${x}" cy="${yCacheRead}" r="2.2" fill="#f59e0b"/><circle cx="${x}" cy="${yCacheCreated}" r="2.2" fill="#8b5cf6"/>`
+        ? `<circle class="trend-point trend-point-cache-read" data-index="${i}" cx="${x}" cy="${yCacheRead}" r="3" fill="#f59e0b"/><circle class="trend-point trend-point-cache-created" data-index="${i}" cx="${x}" cy="${yCacheCreated}" r="3" fill="#8b5cf6"/>`
         : '';
-      return `<circle cx="${x}" cy="${yIn}" r="2.2" fill="#3b82f6"/><circle cx="${x}" cy="${yOut}" r="2.2" fill="#10b981"/>${cacheDots}`;
+      return `<circle class="trend-point trend-point-input" data-index="${i}" cx="${x}" cy="${yIn}" r="3" fill="#3b82f6"/><circle class="trend-point trend-point-output" data-index="${i}" cx="${x}" cy="${yOut}" r="3" fill="#10b981"/>${cacheDots}`;
+    }).join('');
+
+    const hitWidth = points.length === 1 ? plotWidth : Math.max(34, Math.min(96, stepX));
+    const hitTargets = points.map((p, i) => {
+      const center = xFor(i);
+      const left = Math.max(pad.left, center - hitWidth / 2);
+      const right = Math.min(w - pad.right, center + hitWidth / 2);
+      const label = this.formatTrendLabel(p.date, hourly);
+      const ariaLabel = `${hourly ? 'Hour' : 'Date'} ${label}: ${Number(p.input_tokens || 0).toLocaleString()} input tokens, ${Number(p.output_tokens || 0).toLocaleString()} output tokens`;
+      return `<rect class="trend-hit-target" data-index="${i}" x="${left.toFixed(1)}" y="${pad.top}" width="${Math.max(1, right - left).toFixed(1)}" height="${plotHeight}" tabindex="0" role="button" aria-label="${this.escapeHtml(ariaLabel)}"/>`;
     }).join('');
 
     const svg = `
-      <svg class="trend-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">
-        <path d="${areaIn}" fill="#3b82f6" fill-opacity="0.12"/>
-        <path d="${areaOut}" fill="#10b981" fill-opacity="0.12"/>
-        <path d="${pathIn}" fill="none" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round"/>
-        <path d="${pathOut}" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round"/>
-        ${cacheAvailable ? `<path d="${pathCacheRead}" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round"/><path d="${pathCacheCreated}" fill="none" stroke="#8b5cf6" stroke-width="2.5" stroke-linecap="round"/>` : ''}
+      <svg class="trend-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="${hourly ? 'Hourly' : 'Daily'} token trend. Hover or focus a time bucket for details, then click to pin it.">
+        <g class="trend-axis-labels">${grid}${xLabels}</g>
+        <path class="trend-area trend-area-input" d="${areaIn}" fill="#3b82f6" fill-opacity="0.12"/>
+        <path class="trend-area trend-area-output" d="${areaOut}" fill="#10b981" fill-opacity="0.08"/>
+        <path class="trend-series trend-series-input" d="${pathIn}" fill="none" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round"/>
+        <path class="trend-series trend-series-output" d="${pathOut}" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round"/>
+        ${cacheAvailable ? `<path class="trend-series trend-series-cache-read" d="${pathCacheRead}" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round"/><path class="trend-series trend-series-cache-created" d="${pathCacheCreated}" fill="none" stroke="#8b5cf6" stroke-width="2.5" stroke-linecap="round"/>` : ''}
+        <line class="trend-crosshair" x1="${xFor(0).toFixed(1)}" y1="${pad.top}" x2="${xFor(0).toFixed(1)}" y2="${plotBottom}" aria-hidden="true"/>
         ${dots}
+        ${hitTargets}
       </svg>
-      <div class="trend-legend">
-        <span><span class="swatch" style="background:#3b82f6;height:3px;width:14px;display:inline-block;border-radius:2px;margin-right:4px;"></span>Input tokens</span>
-        <span><span class="swatch" style="background:#10b981;height:3px;width:14px;display:inline-block;border-radius:2px;margin-right:4px;"></span>Output tokens</span>
-        ${cacheAvailable ? '<span><span class="swatch" style="background:#f59e0b;height:3px;width:14px;display:inline-block;border-radius:2px;margin-right:4px;"></span>Cache hit</span><span><span class="swatch" style="background:#8b5cf6;height:3px;width:14px;display:inline-block;border-radius:2px;margin-right:4px;"></span>Cache miss/created</span>' : ''}
+      `;
+    const bucketCount = `${points.length} ${hourly ? 'hourly bucket' : 'daily bucket'}${points.length === 1 ? '' : 's'}`;
+    wrap.innerHTML = `
+      <div class="trend-chart-stack">
+        <div class="trend-chart-toolbar">
+          <div>
+            <div class="trend-chart-eyebrow">${hourly ? 'Today' : 'Usage period'}</div>
+            <div class="trend-chart-summary">${bucketCount} · tokens by time bucket</div>
+          </div>
+          <div class="trend-interaction-hint"><span class="trend-hint-dot"></span>Hover or click a bucket</div>
+        </div>
+        <div class="trend-chart-plot">
+          ${svg}
+          <div class="trend-tooltip" id="trend-tooltip" role="status" aria-live="polite" hidden></div>
+        </div>
+        <div class="trend-legend" aria-label="Token series legend">
+          <span><span class="swatch" style="background:#3b82f6"></span>Input tokens</span>
+          <span><span class="swatch" style="background:#10b981"></span>Output tokens</span>
+          ${cacheAvailable ? '<span><span class="swatch" style="background:#f59e0b"></span>Cache hit</span><span><span class="swatch" style="background:#8b5cf6"></span>Cache miss/created</span>' : ''}
+        </div>
+        <div class="trend-selection" id="trend-selection" role="region" aria-live="polite" hidden></div>
       </div>`;
-    wrap.innerHTML = svg;
+    this.bindTrendInteractions(wrap, points, hourly, xFor, w, cacheAvailable);
+  },
+
+  bindTrendInteractions(wrap, points, hourly, xFor, svgWidth, cacheAvailable) {
+    const targets = [...wrap.querySelectorAll('.trend-hit-target')];
+    const tooltip = wrap.querySelector('.trend-tooltip');
+    const crosshair = wrap.querySelector('.trend-crosshair');
+    const selection = wrap.querySelector('.trend-selection');
+    if (!targets.length || !tooltip || !crosshair) return;
+
+    const formatTokens = value => Number(value || 0).toLocaleString();
+    const pointLabel = point => this.formatTrendLabel(point.date, hourly);
+    const seriesRow = (label, value, color) => `
+      <div class="trend-tooltip-row">
+        <span><span class="trend-tooltip-swatch" style="background:${color}"></span>${label}</span>
+        <strong>${formatTokens(value)}</strong>
+      </div>`;
+
+    const showPoint = index => {
+      const point = points[index];
+      if (!point) return;
+      const x = xFor(index);
+      crosshair.setAttribute('x1', x.toFixed(1));
+      crosshair.setAttribute('x2', x.toFixed(1));
+      crosshair.classList.add('is-visible');
+      targets.forEach((target, targetIndex) => target.classList.toggle('is-active', targetIndex === index));
+      wrap.querySelectorAll('.trend-point').forEach(dot => dot.classList.toggle('is-active', Number(dot.dataset.index) === index));
+
+      const label = pointLabel(point);
+      const cacheRows = cacheAvailable
+        ? seriesRow('Cache hit', point.cache_read_tokens, '#f59e0b') + seriesRow('Cache miss/created', point.cache_creation_tokens, '#8b5cf6')
+        : '<div class="trend-tooltip-note">Cache telemetry not reported for this period</div>';
+      tooltip.innerHTML = `
+        <div class="trend-tooltip-title">${hourly ? 'Hour' : 'Date'} ${this.escapeHtml(label)}</div>
+        <div class="trend-tooltip-grid">
+          ${seriesRow('Input tokens', point.input_tokens, '#3b82f6')}
+          ${seriesRow('Output tokens', point.output_tokens, '#10b981')}
+          ${cacheRows}
+        </div>`;
+      tooltip.style.left = `${Math.min(88, Math.max(12, x / svgWidth * 100))}%`;
+      tooltip.hidden = false;
+    };
+
+    const hideHover = () => {
+      if (document.activeElement && targets.includes(document.activeElement)) return;
+      crosshair.classList.remove('is-visible');
+      targets.forEach(target => target.classList.remove('is-active'));
+      wrap.querySelectorAll('.trend-point').forEach(dot => dot.classList.remove('is-active'));
+      tooltip.hidden = true;
+    };
+
+    const selectPoint = index => {
+      const point = points[index];
+      if (!point || !selection) return;
+      showPoint(index);
+      const cacheRate = formatCacheRate(point.cache_rate);
+      selection.innerHTML = `
+        <div class="trend-selection-heading">
+          <span>Selected ${hourly ? 'hour' : 'date'}</span>
+          <strong>${this.escapeHtml(pointLabel(point))}</strong>
+        </div>
+        <div class="trend-selection-metrics">
+          <div><span>Requests</span><strong>${formatTokens(point.requests)}</strong></div>
+          <div><span>Input tokens</span><strong>${formatTokens(point.input_tokens)}</strong></div>
+          <div><span>Output tokens</span><strong>${formatTokens(point.output_tokens)}</strong></div>
+          <div><span>Cache rate</span><strong>${cacheRate}</strong></div>
+        </div>`;
+      selection.hidden = false;
+    };
+
+    targets.forEach((target, index) => {
+      target.addEventListener('pointerenter', () => showPoint(index));
+      target.addEventListener('pointermove', () => showPoint(index));
+      target.addEventListener('pointerleave', hideHover);
+      target.addEventListener('focus', () => showPoint(index));
+      target.addEventListener('blur', event => {
+        if (!wrap.contains(event.relatedTarget)) hideHover();
+      });
+      target.addEventListener('click', () => selectPoint(index));
+      target.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          selectPoint(index);
+          return;
+        }
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') {
+          event.preventDefault();
+          const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? targets.length - 1 : Math.max(0, Math.min(targets.length - 1, index + (event.key === 'ArrowLeft' ? -1 : 1)));
+          targets[nextIndex].focus();
+        }
+      });
+    });
   },
 
   renderEmpty(msg = 'No usage data yet. Run some requests or configure a model to see analytics.') {

@@ -100,6 +100,22 @@ func TestEmitMessageResponse_SynthesizesAnthropicSSE(t *testing.T) {
 	}
 }
 
+func TestResponsesUsageToAnthropicMapsCachedInputTokens(t *testing.T) {
+	var usage types.ResponsesUsage
+	if err := json.Unmarshal([]byte(`{
+		"input_tokens":1000,
+		"output_tokens":12,
+		"input_tokens_details":{"cached_tokens":321}
+	}`), &usage); err != nil {
+		t.Fatalf("unmarshal Responses usage: %v", err)
+	}
+
+	got := responsesUsageToAnthropic(&usage)
+	if got == nil || got.CacheReadInputTokens != 321 {
+		t.Fatalf("CacheReadInputTokens = %v, want 321", got)
+	}
+}
+
 func TestProxyStream_ReasoningContentFastPath(t *testing.T) {
 	handler := NewStreamHandler()
 	w := newMockResponseWriter()

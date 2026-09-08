@@ -166,4 +166,5 @@ type NormalizedUsage struct {
 	OutputTokens        int
 	CacheReadTokens     int
 	CacheCreationTokens int
+	CacheUsageReported  bool
 }

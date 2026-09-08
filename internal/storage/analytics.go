@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -255,9 +256,10 @@ func (a *Analytics) GetProviderBreakdownSince(since time.Time) ([]ProviderBreakd
 	return result, rows.Err()
 }
 
-// DailyTokenPoint is a single day in the token trend.
+// DailyTokenPoint is a single bucket in the token trend. Daily ranges use
+// YYYY-MM-DD; the Today range uses YYYY-MM-DDTHH:00:00 local buckets.
 type DailyTokenPoint struct {
-	Date         string `json:"date"` // YYYY-MM-DD
+	Date         string `json:"date"` // YYYY-MM-DD or YYYY-MM-DDTHH:00:00
 	Requests     int64  `json:"requests"`
 	InputTokens  int64  `json:"input_tokens"`
 	OutputTokens int64  `json:"output_tokens"`
@@ -271,13 +273,24 @@ func (a *Analytics) GetDailyTokenTrend(days int) ([]DailyTokenPoint, error) {
 
 // GetDailyTokenTrendSince returns daily aggregates from the given start time.
 func (a *Analytics) GetDailyTokenTrendSince(since time.Time) ([]DailyTokenPoint, error) {
+	return a.getTokenTrendSince(since, "substr(start_time, 1, 10)")
+}
+
+// GetHourlyTokenTrendSince returns hourly token/request aggregates from the
+// given start time. The bucket is derived from the stored local timestamp so
+// Today remains aligned with the dashboard user's local day.
+func (a *Analytics) GetHourlyTokenTrendSince(since time.Time) ([]DailyTokenPoint, error) {
+	return a.getTokenTrendSince(since, "substr(start_time, 1, 13) || ':00:00'")
+}
+
+func (a *Analytics) getTokenTrendSince(since time.Time, bucketExpression string) ([]DailyTokenPoint, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	rows, err := a.db.DB().QueryContext(ctx, `
-		SELECT 
-			substr(start_time, 1, 10) AS day,
+	query := fmt.Sprintf(`
+		SELECT
+			%s AS bucket,
 			COUNT(*) AS requests,
 			COALESCE(SUM(input_tokens), 0) AS input_tokens,
 			COALESCE(SUM(output_tokens), 0) AS output_tokens,
@@ -286,9 +299,10 @@ func (a *Analytics) GetDailyTokenTrendSince(since time.Time) ([]DailyTokenPoint,
 			COALESCE(SUM(CASE WHEN cache_usage_reported = 1 THEN 1 ELSE 0 END), 0) AS cache_usage_requests
 		FROM requests
 		WHERE datetime(start_time) >= datetime(?)
-		GROUP BY substr(start_time, 1, 10)
-		ORDER BY day ASC
-	`, since.Format(time.RFC3339Nano))
+		GROUP BY %s
+		ORDER BY bucket ASC
+	`, bucketExpression, bucketExpression)
+	rows, err := a.db.DB().QueryContext(ctx, query, since.Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, err
 	}

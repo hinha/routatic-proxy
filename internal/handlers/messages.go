@@ -216,7 +216,7 @@ func cacheUsageFromResponse(body []byte, response types.MessageResponse) cacheus
 	return cacheusage.Usage{
 		ReadTokens:     int64(response.Usage.CacheReadInputTokens),
 		CreationTokens: int64(response.Usage.CacheCreationInputTokens),
-		Reported:       readReported || creationReported,
+		Reported:       response.Usage.CacheUsageReported || readReported || creationReported,
 	}
 }
 

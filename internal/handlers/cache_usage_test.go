@@ -46,6 +46,23 @@ func TestCacheUsageFromResponseRequiresUsageFields(t *testing.T) {
 	}
 }
 
+func TestCacheUsageFromResponsePreservesReportedZeroCounters(t *testing.T) {
+	t.Parallel()
+
+	response := types.MessageResponse{Usage: types.Usage{
+		InputTokens:        1000,
+		OutputTokens:       12,
+		CacheUsageReported: true,
+	}}
+	body := []byte(`{"content":[{"type":"text","text":"cached"}],"usage":{"input_tokens":1000,"output_tokens":12}}`)
+
+	got := cacheUsageFromResponse(body, response)
+	want := cacheusage.Usage{Reported: true}
+	if got != want {
+		t.Fatalf("cacheUsageFromResponse() = %+v, want %+v", got, want)
+	}
+}
+
 func TestResponseWriterDoesNotInferMissingCacheUsage(t *testing.T) {
 	t.Parallel()
 

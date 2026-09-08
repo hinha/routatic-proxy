@@ -32,6 +32,26 @@ func TestResponsesToNormalized_FunctionCallSetsToolUseStopReason(t *testing.T) {
 	}
 }
 
+func TestResponsesToNormalized_MapsCachedInputTokens(t *testing.T) {
+	var responsesResp types.ResponsesResponse
+	if err := json.Unmarshal([]byte(`{
+		"id":"resp-cache",
+		"model":"muse-spark-1.3-contributor",
+		"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"cached"}]}],
+		"usage":{"input_tokens":1000,"output_tokens":12,"input_tokens_details":{"cached_tokens":321}}
+	}`), &responsesResp); err != nil {
+		t.Fatalf("unmarshal Responses response: %v", err)
+	}
+
+	normalized := ResponsesToNormalized(&responsesResp, responsesResp.Model)
+	if got, want := normalized.Usage.CacheReadTokens, 321; got != want {
+		t.Fatalf("CacheReadTokens = %d, want %d", got, want)
+	}
+	if !normalized.Usage.CacheUsageReported {
+		t.Fatal("CacheUsageReported = false, want true")
+	}
+}
+
 func TestResponsesToNormalized_TrimsWhitespaceFromToolArgumentKeys(t *testing.T) {
 	responsesResp := &types.ResponsesResponse{
 		ID: "resp-invalid-tool-parameters",

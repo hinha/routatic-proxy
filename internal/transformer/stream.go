@@ -735,8 +735,10 @@ func responsesUsageToAnthropic(usage *types.ResponsesUsage) *types.Usage {
 		}
 	}
 	return &types.Usage{
-		InputTokens:  usage.InputTokens,
-		OutputTokens: usage.OutputTokens,
+		InputTokens:          nonNegative(usage.InputTokens - responsesCachedTokens(*usage)),
+		OutputTokens:         usage.OutputTokens,
+		CacheReadInputTokens: responsesCachedTokens(*usage),
+		CacheUsageReported:   usage.InputTokensDetails != nil,
 	}
 }
 

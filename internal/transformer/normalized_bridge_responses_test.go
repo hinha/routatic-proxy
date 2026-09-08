@@ -6,7 +6,31 @@ import (
 
 	"github.com/routatic/proxy/internal/config"
 	"github.com/routatic/proxy/internal/core"
+	"github.com/routatic/proxy/pkg/types"
 )
+
+func TestResponsesToNormalized_FunctionCallSetsToolUseStopReason(t *testing.T) {
+	responsesResp := &types.ResponsesResponse{
+		ID:    "resp-tool-call",
+		Model: "muse-spark-1.3-contributor",
+		Output: []types.ResponsesOutput{{
+			Type:      "function_call",
+			CallID:    "call_1",
+			Name:      "Bash",
+			Arguments: `{"command":"pwd"}`,
+		}},
+	}
+
+	normalized := ResponsesToNormalized(responsesResp, responsesResp.Model)
+	if normalized.StopReason != "tool_use" {
+		t.Fatalf("normalized stop reason = %q, want tool_use", normalized.StopReason)
+	}
+
+	anthropicResp := core.DenormalizeResponse(normalized)
+	if anthropicResp.StopReason != "tool_use" {
+		t.Fatalf("Anthropic stop reason = %q, want tool_use", anthropicResp.StopReason)
+	}
+}
 
 // TestNormalizedToResponses_ToolResultOnlyMessage pins the regression that
 // 400s muse-spark-1.2-contributor: a user message whose only content is a

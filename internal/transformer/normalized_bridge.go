@@ -244,6 +244,7 @@ func ResponsesToNormalized(responsesResp *types.ResponsesResponse, modelID strin
 		ID:    responsesResp.ID,
 		Model: modelID,
 	}
+	hasToolCall := false
 
 	for _, output := range responsesResp.Output {
 		switch output.Type {
@@ -258,6 +259,7 @@ func ResponsesToNormalized(responsesResp *types.ResponsesResponse, modelID strin
 			}
 			nr.Messages = append(nr.Messages, nm)
 		case "function_call":
+			hasToolCall = true
 			nm := core.NormalizedMessage{
 				Role: "assistant",
 				Blocks: []core.NormalizedContentBlock{{
@@ -269,7 +271,11 @@ func ResponsesToNormalized(responsesResp *types.ResponsesResponse, modelID strin
 		}
 	}
 
-	nr.StopReason = "end_turn"
+	if hasToolCall {
+		nr.StopReason = "tool_use"
+	} else {
+		nr.StopReason = "end_turn"
+	}
 
 	nr.Usage = core.NormalizedUsage{
 		InputTokens:  responsesResp.Usage.InputTokens,

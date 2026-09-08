@@ -21,6 +21,13 @@ func nonNegative(n int) int {
 	return n
 }
 
+func responsesCachedTokens(usage types.ResponsesUsage) int {
+	if usage.InputTokensDetails == nil {
+		return 0
+	}
+	return usage.InputTokensDetails.CachedTokens
+}
+
 // NewResponseTransformer creates a new response transformer.
 func NewResponseTransformer() *ResponseTransformer {
 	return &ResponseTransformer{}
@@ -224,8 +231,10 @@ func (t *ResponseTransformer) TransformResponsesResponse(
 		Model:      originalModel,
 		StopReason: "end_turn",
 		Usage: types.Usage{
-			InputTokens:  responsesResp.Usage.InputTokens,
-			OutputTokens: responsesResp.Usage.OutputTokens,
+			InputTokens:          nonNegative(responsesResp.Usage.InputTokens - responsesCachedTokens(responsesResp.Usage)),
+			OutputTokens:         responsesResp.Usage.OutputTokens,
+			CacheReadInputTokens: responsesCachedTokens(responsesResp.Usage),
+			CacheUsageReported:   responsesResp.Usage.InputTokensDetails != nil,
 		},
 	}
 

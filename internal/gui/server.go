@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/routatic/proxy/internal/cacheusage"
 	"github.com/routatic/proxy/internal/catalog"
 	"github.com/routatic/proxy/internal/config"
 	"github.com/routatic/proxy/internal/daemon"
@@ -241,15 +242,19 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // ── API handlers ──────────────────────────────────────────────────────────────
 
 type metricsResponse struct {
-	ProxyRunning      bool             `json:"proxy_running"`
-	ConnectedExisting bool             `json:"connected_to_existing"`
-	Port              int              `json:"port"`
-	RequestsReceived  int64            `json:"requests_received"`
-	RequestsStreamed  int64            `json:"requests_streamed"`
-	RequestsSuccess   int64            `json:"requests_success"`
-	RequestsFailed    int64            `json:"requests_failed"`
-	StorageDropped    int64            `json:"storage_dropped"`
-	ModelCounts       map[string]int64 `json:"model_counts"`
+	ProxyRunning        bool             `json:"proxy_running"`
+	ConnectedExisting   bool             `json:"connected_to_existing"`
+	Port                int              `json:"port"`
+	RequestsReceived    int64            `json:"requests_received"`
+	RequestsStreamed    int64            `json:"requests_streamed"`
+	RequestsSuccess     int64            `json:"requests_success"`
+	RequestsFailed      int64            `json:"requests_failed"`
+	StorageDropped      int64            `json:"storage_dropped"`
+	CacheUsageRequests  int64            `json:"cache_usage_requests"`
+	CacheReadTokens     int64            `json:"cache_read_tokens"`
+	CacheCreationTokens int64            `json:"cache_creation_tokens"`
+	CacheRate           *float64         `json:"cache_rate"`
+	ModelCounts         map[string]int64 `json:"model_counts"`
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
@@ -258,31 +263,38 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		snap = s.met.GetSnapshot()
 	}
 	resp := metricsResponse{
-		ProxyRunning:      s.proxyRunning.Load(),
-		ConnectedExisting: s.connectedExisting.Load(),
-		Port:              s.getProxyPort(),
-		RequestsReceived:  snap.RequestsReceived,
-		RequestsStreamed:  snap.RequestsStreamed,
-		RequestsSuccess:   snap.RequestsSuccess,
-		RequestsFailed:    snap.RequestsFailed,
-		StorageDropped:    snap.StorageDropped,
-		ModelCounts:       snap.ModelCounts,
+		ProxyRunning:        s.proxyRunning.Load(),
+		ConnectedExisting:   s.connectedExisting.Load(),
+		Port:                s.getProxyPort(),
+		RequestsReceived:    snap.RequestsReceived,
+		RequestsStreamed:    snap.RequestsStreamed,
+		RequestsSuccess:     snap.RequestsSuccess,
+		RequestsFailed:      snap.RequestsFailed,
+		StorageDropped:      snap.StorageDropped,
+		CacheUsageRequests:  snap.CacheUsageRequests,
+		CacheReadTokens:     snap.CacheReadTokens,
+		CacheCreationTokens: snap.CacheCreationTokens,
+		CacheRate:           cacheRate(snap.CacheReadTokens, snap.CacheCreationTokens, snap.CacheUsageRequests),
+		ModelCounts:         snap.ModelCounts,
 	}
 	writeJSON(w, resp)
 }
 
 type historyEntry struct {
-	ID           string `json:"id"`
-	Model        string `json:"model"`
-	Provider     string `json:"provider"`
-	Scenario     string `json:"scenario"`
-	StartTime    string `json:"start_time"` // RFC3339
-	DurationMs   int64  `json:"duration_ms"`
-	InputTokens  int    `json:"input_tokens"`
-	OutputTokens int    `json:"output_tokens"`
-	Streaming    bool   `json:"streaming"`
-	Success      bool   `json:"success"`
-	ErrorMsg     string `json:"error_msg,omitempty"`
+	ID                       string   `json:"id"`
+	Model                    string   `json:"model"`
+	Provider                 string   `json:"provider"`
+	Scenario                 string   `json:"scenario"`
+	StartTime                string   `json:"start_time"` // RFC3339
+	DurationMs               int64    `json:"duration_ms"`
+	InputTokens              int      `json:"input_tokens"`
+	OutputTokens             int      `json:"output_tokens"`
+	CacheReadInputTokens     *int64   `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens *int64   `json:"cache_creation_input_tokens"`
+	CacheRate                *float64 `json:"cache_rate"`
+	Streaming                bool     `json:"streaming"`
+	Success                  bool     `json:"success"`
+	ErrorMsg                 string   `json:"error_msg,omitempty"`
 }
 
 func (s *Server) handleHistory(w http.ResponseWriter, _ *http.Request) {
@@ -293,21 +305,50 @@ func (s *Server) handleHistory(w http.ResponseWriter, _ *http.Request) {
 	records := s.hist.Last(200)
 	out := make([]historyEntry, len(records))
 	for i, rec := range records {
+		cacheRead, cacheCreation, rate := cacheUsageFields(rec.CacheUsage)
 		out[i] = historyEntry{
-			ID:           rec.ID,
-			Model:        rec.Model,
-			Provider:     rec.Provider,
-			Scenario:     rec.Scenario,
-			StartTime:    rec.StartTime.Format("2006-01-02T15:04:05Z07:00"),
-			DurationMs:   rec.Duration.Milliseconds(),
-			InputTokens:  rec.InputTokens,
-			OutputTokens: rec.OutputTokens,
-			Streaming:    rec.Streaming,
-			Success:      rec.Success,
-			ErrorMsg:     rec.ErrorMsg,
+			ID:                       rec.ID,
+			Model:                    rec.Model,
+			Provider:                 rec.Provider,
+			Scenario:                 rec.Scenario,
+			StartTime:                rec.StartTime.Format("2006-01-02T15:04:05Z07:00"),
+			DurationMs:               rec.Duration.Milliseconds(),
+			InputTokens:              rec.InputTokens,
+			OutputTokens:             rec.OutputTokens,
+			CacheReadInputTokens:     cacheRead,
+			CacheCreationInputTokens: cacheCreation,
+			CacheRate:                rate,
+			Streaming:                rec.Streaming,
+			Success:                  rec.Success,
+			ErrorMsg:                 rec.ErrorMsg,
 		}
 	}
 	writeJSON(w, out)
+}
+
+func cacheUsageFields(usage cacheusage.Usage) (*int64, *int64, *float64) {
+	if !usage.Reported {
+		return nil, nil, nil
+	}
+	read := usage.ReadTokens
+	creation := usage.CreationTokens
+	rate, ok := usage.Rate()
+	if !ok {
+		return &read, &creation, nil
+	}
+	return &read, &creation, &rate
+}
+
+func cacheRate(readTokens, creationTokens, reportedRequests int64) *float64 {
+	rate, ok := (cacheusage.Usage{
+		ReadTokens:     readTokens,
+		CreationTokens: creationTokens,
+		Reported:       reportedRequests > 0,
+	}).Rate()
+	if !ok {
+		return nil
+	}
+	return &rate
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {

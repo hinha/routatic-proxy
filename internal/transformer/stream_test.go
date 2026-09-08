@@ -100,6 +100,22 @@ func TestEmitMessageResponse_SynthesizesAnthropicSSE(t *testing.T) {
 	}
 }
 
+func TestResponsesUsageToAnthropicMapsCachedInputTokens(t *testing.T) {
+	var usage types.ResponsesUsage
+	if err := json.Unmarshal([]byte(`{
+		"input_tokens":1000,
+		"output_tokens":12,
+		"input_tokens_details":{"cached_tokens":321}
+	}`), &usage); err != nil {
+		t.Fatalf("unmarshal Responses usage: %v", err)
+	}
+
+	got := responsesUsageToAnthropic(&usage)
+	if got == nil || got.CacheReadInputTokens != 321 {
+		t.Fatalf("CacheReadInputTokens = %v, want 321", got)
+	}
+}
+
 func TestProxyStream_ReasoningContentFastPath(t *testing.T) {
 	handler := NewStreamHandler()
 	w := newMockResponseWriter()
@@ -1454,10 +1470,10 @@ func TestProxyResponsesStream_ToolCall(t *testing.T) {
 
 	events := parseSSEEvents(t, w.buf.String())
 
-	// message_start, tool_start(idx=0), 2x input_json_delta, tool_stop(idx=0),
-	// message_delta, message_stop = 7
-	if len(events) != 7 {
-		t.Fatalf("expected 7 events, got %d: %+v", len(events), events)
+	// message_start, tool_start(idx=0), input_json_delta, tool_stop(idx=0),
+	// message_delta, message_stop = 6
+	if len(events) != 6 {
+		t.Fatalf("expected 6 events, got %d: %+v", len(events), events)
 	}
 
 	if events[1].Type != "content_block_start" {
@@ -1479,25 +1495,61 @@ func TestProxyResponsesStream_ToolCall(t *testing.T) {
 		t.Errorf("event[1].Index = %v, want 0", events[1].Index)
 	}
 
-	if events[2].Delta == nil || events[2].Delta.Type != "input_json_delta" || events[2].Delta.PartialJSON != `{"city":` {
-		t.Errorf("event[2] = %+v, want input_json_delta `{\"city\":`", events[2])
-	}
-	if events[3].Delta == nil || events[3].Delta.Type != "input_json_delta" || events[3].Delta.PartialJSON != `"Paris"}` {
-		t.Errorf("event[3] = %+v, want input_json_delta `\"Paris\"}`", events[3])
+	if events[2].Delta == nil || events[2].Delta.Type != "input_json_delta" || events[2].Delta.PartialJSON != `{"city":"Paris"}` {
+		t.Errorf("event[2] = %+v, want complete input_json_delta", events[2])
 	}
 
-	if events[4].Type != "content_block_stop" {
-		t.Errorf("event[4].Type = %q, want content_block_stop", events[4].Type)
+	if events[3].Type != "content_block_stop" {
+		t.Errorf("event[3].Type = %q, want content_block_stop", events[3].Type)
 	}
 
-	if events[5].Type != "message_delta" {
-		t.Errorf("event[5].Type = %q, want message_delta", events[5].Type)
+	if events[4].Type != "message_delta" {
+		t.Errorf("event[4].Type = %q, want message_delta", events[4].Type)
 	}
-	if events[5].Delta == nil || events[5].Delta.StopReason != "tool_use" {
-		t.Errorf("event[5].Delta.StopReason = %q, want tool_use", events[5].Delta.StopReason)
+	if events[4].Delta == nil || events[4].Delta.StopReason != "tool_use" {
+		t.Errorf("event[4].Delta.StopReason = %q, want tool_use", events[4].Delta.StopReason)
 	}
-	if events[6].Type != "message_stop" {
-		t.Errorf("event[6].Type = %q, want message_stop", events[6].Type)
+	if events[5].Type != "message_stop" {
+		t.Errorf("event[5].Type = %q, want message_stop", events[5].Type)
+	}
+}
+
+func TestProxyResponsesStream_TrimsWhitespaceFromToolArgumentKeys(t *testing.T) {
+	handler := NewStreamHandler()
+	w := newMockResponseWriter()
+	body := sseLines(
+		`{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_ask","call_id":"call_ask","name":"AskUserQuestion"}}`,
+		`{"type":"response.function_call_arguments.delta","item_id":"fc_ask","delta":"{\"questions\":[{\"options\":[{\"label\":\"A\",\"description "}`,
+		`{"type":"response.function_call_arguments.delta","item_id":"fc_ask","delta":"\":\"answer\"}]}]}"}`,
+		`{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_ask","call_id":"call_ask","name":"AskUserQuestion","arguments":"{\"questions\":[{\"options\":[{\"label\":\"A\",\"description \":\"answer\"}]}]}"}}`,
+		`{"type":"response.completed"}`,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := handler.ProxyResponsesStream(w, body, "muse-spark-1.3-contributor", ctx, 0, cancel); err != nil {
+		t.Fatalf("ProxyResponsesStream error: %v", err)
+	}
+
+	events := parseSSEEvents(t, w.buf.String())
+	var arguments strings.Builder
+	for _, event := range events {
+		if event.Delta != nil && event.Delta.Type == "input_json_delta" {
+			arguments.WriteString(event.Delta.PartialJSON)
+		}
+	}
+
+	var decoded struct {
+		Questions []struct {
+			Options []map[string]string `json:"options"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal([]byte(arguments.String()), &decoded); err != nil {
+		t.Fatalf("unmarshal streamed tool arguments: %v; arguments = %s", err, arguments.String())
+	}
+	if got := decoded.Questions[0].Options[0]["description"]; got != "answer" {
+		t.Fatalf("description = %q, want answer; arguments = %s", got, arguments.String())
 	}
 }
 
@@ -1534,8 +1586,8 @@ func TestProxyResponsesStream_OverlappingToolCallsUseDistinctIndices(t *testing.
 		{eventType: "content_block_start", index: 0},
 		{eventType: "content_block_start", index: 1},
 		{eventType: "content_block_delta", index: 0, deltaType: "input_json_delta"},
-		{eventType: "content_block_delta", index: 1, deltaType: "input_json_delta"},
 		{eventType: "content_block_stop", index: 0},
+		{eventType: "content_block_delta", index: 1, deltaType: "input_json_delta"},
 		{eventType: "content_block_stop", index: 1},
 	}
 	for i, want := range wantEvents {

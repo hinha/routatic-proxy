@@ -288,6 +288,26 @@ func TestTransformResponseWithCacheTokens(t *testing.T) {
 	}
 }
 
+func TestTransformResponsesResponseWithCachedInputTokens(t *testing.T) {
+	var responsesResp types.ResponsesResponse
+	if err := json.Unmarshal([]byte(`{
+		"id":"resp-cache",
+		"model":"muse-spark-1.3-contributor",
+		"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"cached"}]}],
+		"usage":{"input_tokens":1000,"output_tokens":12,"input_tokens_details":{"cached_tokens":321}}
+	}`), &responsesResp); err != nil {
+		t.Fatalf("unmarshal Responses response: %v", err)
+	}
+
+	resp, err := NewResponseTransformer().TransformResponsesResponse(&responsesResp, responsesResp.Model)
+	if err != nil {
+		t.Fatalf("TransformResponsesResponse() error = %v", err)
+	}
+	if got, want := resp.Usage.CacheReadInputTokens, 321; got != want {
+		t.Fatalf("CacheReadInputTokens = %d, want %d", got, want)
+	}
+}
+
 // TestTransformResponseWithPartialCacheTokens covers the case where the
 // upstream's hit + miss don't fully account for prompt_tokens (e.g., a
 // portion of the prompt is below the prefix-cache minimum and reported as

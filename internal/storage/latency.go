@@ -52,7 +52,7 @@ func (l *Latency) GetStats(since time.Time) ([]ModelLatencyStats, error) {
 	query := `
 		SELECT model, duration_ms
 		FROM requests
-		WHERE start_time >= ? AND success = 1
+		WHERE datetime(start_time) >= datetime(?) AND success = 1
 		ORDER BY model
 	`
 
@@ -94,7 +94,7 @@ func (l *Latency) GetSuccessCounts(since time.Time) (map[string]int64, map[strin
 	query := `
 		SELECT model, success, COUNT(*)
 		FROM requests
-		WHERE start_time >= ?
+		WHERE datetime(start_time) >= datetime(?)
 		GROUP BY model, success
 	`
 

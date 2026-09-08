@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/routatic/proxy/internal/cacheusage"
 )
 
 // ModelKey returns the canonical provider/model label used by metrics.
@@ -21,14 +23,17 @@ func ModelKey(provider, model string) string {
 // Metrics holds in-memory metrics for the proxy.
 type Metrics struct {
 	// Counters (atomic)
-	requestsReceived atomic.Int64
-	requestsStreamed atomic.Int64
-	requestsSuccess  atomic.Int64
-	requestsFailed   atomic.Int64
-	upstreamCalls    atomic.Int64
-	rateLimited      atomic.Int64
-	deduplicated     atomic.Int64
-	storageDropped   atomic.Int64
+	requestsReceived  atomic.Int64
+	requestsStreamed  atomic.Int64
+	requestsSuccess   atomic.Int64
+	requestsFailed    atomic.Int64
+	upstreamCalls     atomic.Int64
+	rateLimited       atomic.Int64
+	deduplicated      atomic.Int64
+	storageDropped    atomic.Int64
+	cacheUsageReqs    atomic.Int64
+	cacheReadTokens   atomic.Int64
+	cacheCreateTokens atomic.Int64
 
 	// Latency tracking
 	mu                sync.RWMutex
@@ -172,6 +177,16 @@ func (m *Metrics) RecordStorageDrop() {
 	m.storageDropped.Add(1)
 }
 
+// RecordCacheUsage records provider-reported prompt-cache token usage.
+func (m *Metrics) RecordCacheUsage(usage cacheusage.Usage) {
+	if !usage.Reported {
+		return
+	}
+	m.cacheUsageReqs.Add(1)
+	m.cacheReadTokens.Add(usage.ReadTokens)
+	m.cacheCreateTokens.Add(usage.CreationTokens)
+}
+
 func (m *Metrics) recordLatency(latency time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -261,39 +276,45 @@ func (m *Metrics) GetSnapshot() Snapshot {
 	m.modelFailedMu.RUnlock()
 
 	return Snapshot{
-		RequestsReceived: m.requestsReceived.Load(),
-		RequestsStreamed: m.requestsStreamed.Load(),
-		RequestsSuccess:  m.requestsSuccess.Load(),
-		RequestsFailed:   m.requestsFailed.Load(),
-		UpstreamCalls:    m.upstreamCalls.Load(),
-		RateLimited:      m.rateLimited.Load(),
-		Deduplicated:     m.deduplicated.Load(),
-		StorageDropped:   m.storageDropped.Load(),
-		Latencies:        latencies,
-		ModelCounts:      modelCounts,
-		ModelSuccess:     modelSuccess,
-		ModelFailed:      modelFailed,
-		TTFT:             ttft,
-		StageLatencies:   stageLatencies,
+		RequestsReceived:    m.requestsReceived.Load(),
+		RequestsStreamed:    m.requestsStreamed.Load(),
+		RequestsSuccess:     m.requestsSuccess.Load(),
+		RequestsFailed:      m.requestsFailed.Load(),
+		UpstreamCalls:       m.upstreamCalls.Load(),
+		RateLimited:         m.rateLimited.Load(),
+		Deduplicated:        m.deduplicated.Load(),
+		StorageDropped:      m.storageDropped.Load(),
+		CacheUsageRequests:  m.cacheUsageReqs.Load(),
+		CacheReadTokens:     m.cacheReadTokens.Load(),
+		CacheCreationTokens: m.cacheCreateTokens.Load(),
+		Latencies:           latencies,
+		ModelCounts:         modelCounts,
+		ModelSuccess:        modelSuccess,
+		ModelFailed:         modelFailed,
+		TTFT:                ttft,
+		StageLatencies:      stageLatencies,
 	}
 }
 
 // Snapshot represents a point-in-time view of metrics.
 type Snapshot struct {
-	RequestsReceived int64
-	RequestsStreamed int64
-	RequestsSuccess  int64
-	RequestsFailed   int64
-	UpstreamCalls    int64
-	RateLimited      int64
-	Deduplicated     int64
-	StorageDropped   int64
-	Latencies        []time.Duration
-	ModelCounts      map[string]int64
-	ModelSuccess     map[string]int64 // Per-model success counts
-	ModelFailed      map[string]int64 // Per-model failure counts
-	TTFT             []time.Duration
-	StageLatencies   map[string][]time.Duration
+	RequestsReceived    int64
+	RequestsStreamed    int64
+	RequestsSuccess     int64
+	RequestsFailed      int64
+	UpstreamCalls       int64
+	RateLimited         int64
+	Deduplicated        int64
+	StorageDropped      int64
+	CacheUsageRequests  int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	Latencies           []time.Duration
+	ModelCounts         map[string]int64
+	ModelSuccess        map[string]int64 // Per-model success counts
+	ModelFailed         map[string]int64 // Per-model failure counts
+	TTFT                []time.Duration
+	StageLatencies      map[string][]time.Duration
 }
 
 // ModelLatencyStats holds latency statistics for a single model.

@@ -82,6 +82,10 @@ func Open(cfg Config) (*Database, error) {
 		// Non-fatal; log and continue so the proxy still works
 		slog.Warn("migration warning", "err", err)
 	}
+	if err := database.migrateAddCacheUsageColumns(ctx); err != nil {
+		// Non-fatal; log and continue so the proxy still works
+		slog.Warn("cache usage migration warning", "err", err)
+	}
 
 	// Seed default model prices so analytics dashboard shows meaningful
 	// cost numbers immediately for new/existing installs. Idempotent.
@@ -108,6 +112,9 @@ func (d *Database) initSchema(ctx context.Context) error {
 		duration_ms INTEGER,
 		input_tokens INTEGER,
 		output_tokens INTEGER,
+		cache_read_input_tokens INTEGER,
+		cache_creation_input_tokens INTEGER,
+		cache_usage_reported INTEGER NOT NULL DEFAULT 0,
 		streaming INTEGER,
 		success INTEGER,
 		error_msg TEXT,
@@ -207,6 +214,22 @@ func (d *Database) migrateAddAttemptColumn(ctx context.Context) error {
 			return nil
 		}
 		return err
+	}
+	return nil
+}
+
+// migrateAddCacheUsageColumns adds provider prompt-cache usage fields to
+// databases created before cache telemetry was persisted.
+func (d *Database) migrateAddCacheUsageColumns(ctx context.Context) error {
+	columns := []string{
+		`ALTER TABLE requests ADD COLUMN cache_read_input_tokens INTEGER`,
+		`ALTER TABLE requests ADD COLUMN cache_creation_input_tokens INTEGER`,
+		`ALTER TABLE requests ADD COLUMN cache_usage_reported INTEGER NOT NULL DEFAULT 0`,
+	}
+	for _, statement := range columns {
+		if _, err := d.db.ExecContext(ctx, statement); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
 	}
 	return nil
 }

@@ -298,6 +298,9 @@ type Usage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	// CacheUsageReported is internal metadata used to preserve a provider's
+	// explicit zero-valued cache counters through response normalization.
+	CacheUsageReported bool `json:"-"`
 }
 
 // ContentBlockDelta represents a streaming delta for a content block.

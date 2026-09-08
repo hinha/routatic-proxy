@@ -29,35 +29,40 @@ func (h *AnalyticsHandler) writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func (h *AnalyticsHandler) getDays(r *http.Request) int {
+func (h *AnalyticsHandler) getRange(r *http.Request) (time.Time, int, string) {
+	if r.URL.Query().Get("range") == "today" {
+		now := time.Now()
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()), 0, "today"
+	}
+
 	daysStr := r.URL.Query().Get("days")
 	if daysStr == "" {
-		return 30
+		return time.Now().AddDate(0, 0, -30), 30, "days"
 	}
-	d, err := strconv.Atoi(daysStr)
-	if err != nil || d <= 0 {
-		return 30
+	days, err := strconv.Atoi(daysStr)
+	if err != nil || days <= 0 {
+		days = 30
 	}
-	return d
+	return time.Now().AddDate(0, 0, -days), days, "days"
 }
 
 // Summary returns high-level KPIs and breakdowns.
 func (h *AnalyticsHandler) Summary(w http.ResponseWriter, r *http.Request) {
-	days := h.getDays(r)
+	since, _, period := h.getRange(r)
 
-	summary, err := h.store.GetTokenSummary(days)
+	summary, err := h.store.GetTokenSummarySince(since)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	models, err := h.store.GetModelBreakdown(days)
+	models, err := h.store.GetModelBreakdownSince(since)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	providers, err := h.store.GetProviderBreakdown(days)
+	providers, err := h.store.GetProviderBreakdownSince(since)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -67,29 +72,39 @@ func (h *AnalyticsHandler) Summary(w http.ResponseWriter, r *http.Request) {
 		"summary":      summary,
 		"models":       models,
 		"providers":    providers,
+		"range":        period,
 		"generated_at": time.Now().Format(time.RFC3339),
 	}
 	h.writeJSON(w, resp)
 }
 
-// TokenTrend returns daily token/request aggregates.
+// TokenTrend returns daily aggregates for multi-day ranges and hourly
+// aggregates for Today.
 func (h *AnalyticsHandler) TokenTrend(w http.ResponseWriter, r *http.Request) {
-	days := h.getDays(r)
-	trend, err := h.store.GetDailyTokenTrend(days)
+	since, days, period := h.getRange(r)
+	var (
+		trend []storage.DailyTokenPoint
+		err   error
+	)
+	if period == "today" {
+		trend, err = h.store.GetHourlyTokenTrendSince(since)
+	} else {
+		trend, err = h.store.GetDailyTokenTrendSince(since)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	h.writeJSON(w, map[string]any{
 		"days":  days,
+		"range": period,
 		"trend": trend,
 	})
 }
 
 // LatencyStats returns latency stats per model.
 func (h *AnalyticsHandler) LatencyStats(w http.ResponseWriter, r *http.Request) {
-	days := h.getDays(r)
-	since := time.Now().AddDate(0, 0, -days)
+	since, days, period := h.getRange(r)
 	stats, err := h.latency.GetStats(since)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -97,6 +112,7 @@ func (h *AnalyticsHandler) LatencyStats(w http.ResponseWriter, r *http.Request) 
 	}
 	h.writeJSON(w, map[string]any{
 		"days":  days,
+		"range": period,
 		"stats": stats,
 	})
 }

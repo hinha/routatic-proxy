@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"time"
 
+	"github.com/routatic/proxy/internal/cacheusage"
 	"github.com/routatic/proxy/internal/history"
 )
 
@@ -27,12 +28,21 @@ func (r *Requests) Insert(rec history.RequestRecord) error {
 	if attempt < 1 {
 		attempt = 1
 	}
+	var cacheRead, cacheCreation any
+	cacheReported := 0
+	if rec.CacheUsage.Reported {
+		cacheRead = rec.CacheUsage.ReadTokens
+		cacheCreation = rec.CacheUsage.CreationTokens
+		cacheReported = 1
+	}
 
 	_, err := r.db.DB().ExecContext(ctx, `
 		INSERT OR REPLACE INTO requests (
 			id, model, provider, scenario, start_time, duration_ms,
-			input_tokens, output_tokens, streaming, success, error_msg, attempt
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			input_tokens, output_tokens, cache_read_input_tokens,
+			cache_creation_input_tokens, cache_usage_reported,
+			streaming, success, error_msg, attempt
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		rec.ID,
 		rec.Model,
@@ -42,6 +52,9 @@ func (r *Requests) Insert(rec history.RequestRecord) error {
 		rec.Duration.Milliseconds(),
 		rec.InputTokens,
 		rec.OutputTokens,
+		cacheRead,
+		cacheCreation,
+		cacheReported,
 		boolToInt(rec.Streaming),
 		boolToInt(rec.Success),
 		rec.ErrorMsg,
@@ -62,7 +75,9 @@ func (r *Requests) Last(n int) ([]history.RequestRecord, error) {
 
 	rows, err := r.db.DB().QueryContext(ctx, `
 		SELECT id, model, provider, scenario, start_time, duration_ms,
-		       input_tokens, output_tokens, streaming, success, error_msg, attempt
+		       input_tokens, output_tokens, cache_read_input_tokens,
+		       cache_creation_input_tokens, cache_usage_reported,
+		       streaming, success, error_msg, attempt
 		FROM requests
 		ORDER BY start_time DESC
 		LIMIT ?
@@ -82,7 +97,9 @@ func (r *Requests) Since(since time.Time) ([]history.RequestRecord, error) {
 
 	rows, err := r.db.DB().QueryContext(ctx, `
 		SELECT id, model, provider, scenario, start_time, duration_ms,
-		       input_tokens, output_tokens, streaming, success, error_msg, attempt
+		       input_tokens, output_tokens, cache_read_input_tokens,
+		       cache_creation_input_tokens, cache_usage_reported,
+		       streaming, success, error_msg, attempt
 		FROM requests
 		WHERE start_time >= ?
 		ORDER BY start_time DESC
@@ -140,6 +157,7 @@ func scanRequests(rows *sql.Rows) ([]history.RequestRecord, error) {
 		var streaming, success int
 
 		var attempt sql.NullInt64
+		var cacheRead, cacheCreation, cacheReported sql.NullInt64
 		err := rows.Scan(
 			&rec.ID,
 			&rec.Model,
@@ -149,6 +167,9 @@ func scanRequests(rows *sql.Rows) ([]history.RequestRecord, error) {
 			&rec.Duration,
 			&rec.InputTokens,
 			&rec.OutputTokens,
+			&cacheRead,
+			&cacheCreation,
+			&cacheReported,
 			&streaming,
 			&success,
 			&rec.ErrorMsg,
@@ -158,6 +179,13 @@ func scanRequests(rows *sql.Rows) ([]history.RequestRecord, error) {
 			rec.Attempt = int(attempt.Int64)
 		} else {
 			rec.Attempt = 1
+		}
+		if cacheReported.Valid && cacheReported.Int64 == 1 {
+			rec.CacheUsage = cacheusage.Usage{
+				ReadTokens:     cacheRead.Int64,
+				CreationTokens: cacheCreation.Int64,
+				Reported:       true,
+			}
 		}
 		if err != nil {
 			return nil, err

@@ -68,10 +68,18 @@ type ResponsesContent struct {
 	Text string `json:"text,omitempty"`
 }
 
+// ResponsesInputTokensDetails contains the cache portion of Responses input
+// tokens. Responses reports cached input tokens, but does not expose a cache
+// creation counter like the Anthropic Messages API does.
+type ResponsesInputTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
 // ResponsesUsage represents token usage in a Responses response.
 type ResponsesUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens        int                          `json:"input_tokens"`
+	OutputTokens       int                          `json:"output_tokens"`
+	InputTokensDetails *ResponsesInputTokensDetails `json:"input_tokens_details,omitempty"`
 }
 
 // ResponsesChunk represents a streaming chunk from the Responses API.

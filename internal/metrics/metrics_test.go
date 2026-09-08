@@ -3,6 +3,8 @@ package metrics
 import (
 	"testing"
 	"time"
+
+	"github.com/routatic/proxy/internal/cacheusage"
 )
 
 func TestSnapshotPercentilesUseSortedSamples(t *testing.T) {
@@ -82,6 +84,26 @@ func TestMetricsRecordsStorageDrops(t *testing.T) {
 
 	if got, want := m.GetSnapshot().StorageDropped, int64(2); got != want {
 		t.Fatalf("StorageDropped = %d, want %d", got, want)
+	}
+}
+
+func TestMetricsRecordsCacheUsage(t *testing.T) {
+	t.Parallel()
+
+	m := New()
+	m.RecordCacheUsage(cacheusage.Usage{ReadTokens: 75, CreationTokens: 25, Reported: true})
+	m.RecordCacheUsage(cacheusage.Usage{ReadTokens: 10, CreationTokens: 0, Reported: true})
+	m.RecordCacheUsage(cacheusage.Usage{ReadTokens: 999, CreationTokens: 999})
+
+	snapshot := m.GetSnapshot()
+	if got, want := snapshot.CacheUsageRequests, int64(2); got != want {
+		t.Fatalf("CacheUsageRequests = %d, want %d", got, want)
+	}
+	if got, want := snapshot.CacheReadTokens, int64(85); got != want {
+		t.Fatalf("CacheReadTokens = %d, want %d", got, want)
+	}
+	if got, want := snapshot.CacheCreationTokens, int64(25); got != want {
+		t.Fatalf("CacheCreationTokens = %d, want %d", got, want)
 	}
 }
 

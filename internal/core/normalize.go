@@ -130,6 +130,7 @@ func DenormalizeResponse(nr *NormalizedResponse) *types.MessageResponse {
 			OutputTokens:             nr.Usage.OutputTokens,
 			CacheCreationInputTokens: nr.Usage.CacheCreationTokens,
 			CacheReadInputTokens:     nr.Usage.CacheReadTokens,
+			CacheUsageReported:       nr.Usage.CacheUsageReported,
 		},
 	}
 

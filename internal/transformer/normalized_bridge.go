@@ -244,6 +244,7 @@ func ResponsesToNormalized(responsesResp *types.ResponsesResponse, modelID strin
 		ID:    responsesResp.ID,
 		Model: modelID,
 	}
+	hasToolCall := false
 
 	for _, output := range responsesResp.Output {
 		switch output.Type {
@@ -258,22 +259,29 @@ func ResponsesToNormalized(responsesResp *types.ResponsesResponse, modelID strin
 			}
 			nr.Messages = append(nr.Messages, nm)
 		case "function_call":
+			hasToolCall = true
 			nm := core.NormalizedMessage{
 				Role: "assistant",
 				Blocks: []core.NormalizedContentBlock{{
 					Type: "tool_use", ID: output.CallID, Name: output.Name,
-					Input: []byte(output.Arguments),
+					Input: []byte(normalizeToolArguments(output.Arguments)),
 				}},
 			}
 			nr.Messages = append(nr.Messages, nm)
 		}
 	}
 
-	nr.StopReason = "end_turn"
+	if hasToolCall {
+		nr.StopReason = "tool_use"
+	} else {
+		nr.StopReason = "end_turn"
+	}
 
 	nr.Usage = core.NormalizedUsage{
-		InputTokens:  responsesResp.Usage.InputTokens,
-		OutputTokens: responsesResp.Usage.OutputTokens,
+		InputTokens:        nonNegative(responsesResp.Usage.InputTokens - responsesCachedTokens(responsesResp.Usage)),
+		OutputTokens:       responsesResp.Usage.OutputTokens,
+		CacheReadTokens:    responsesCachedTokens(responsesResp.Usage),
+		CacheUsageReported: responsesResp.Usage.InputTokensDetails != nil,
 	}
 
 	return nr

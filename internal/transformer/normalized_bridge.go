@@ -264,7 +264,7 @@ func ResponsesToNormalized(responsesResp *types.ResponsesResponse, modelID strin
 				Role: "assistant",
 				Blocks: []core.NormalizedContentBlock{{
 					Type: "tool_use", ID: output.CallID, Name: output.Name,
-					Input: []byte(output.Arguments),
+					Input: []byte(normalizeToolArguments(output.Arguments)),
 				}},
 			}
 			nr.Messages = append(nr.Messages, nm)

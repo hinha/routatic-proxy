@@ -834,6 +834,7 @@ func (h *StreamHandler) ProxyResponsesStream(
 	reasoningStarted := false
 	hasToolUse := false
 	startedToolCalls := make(map[string]int)
+	toolArguments := make(map[string]string)
 	var terminalUsage *types.ResponsesUsage
 	readBuf := readBufPool.Get().(*[]byte)
 	defer readBufPool.Put(readBuf)
@@ -853,7 +854,7 @@ func (h *StreamHandler) ProxyResponsesStream(
 			for i := 0; i < n; i++ {
 				b := (*readBuf)[i]
 				if b == '\n' {
-					if err := h.processResponsesSSELine(w, flusher, lineBuf, &contentIndex, &contentStarted, &reasoningStarted, &hasToolUse, startedToolCalls, originalModel, &terminalUsage); err != nil {
+					if err := h.processResponsesSSELine(w, flusher, lineBuf, &contentIndex, &contentStarted, &reasoningStarted, &hasToolUse, startedToolCalls, toolArguments, originalModel, &terminalUsage); err != nil {
 						return err
 					}
 					lineBuf = lineBuf[:0]
@@ -865,7 +866,7 @@ func (h *StreamHandler) ProxyResponsesStream(
 
 		if err == io.EOF {
 			if len(lineBuf) > 0 {
-				if err := h.processResponsesSSELine(w, flusher, lineBuf, &contentIndex, &contentStarted, &reasoningStarted, &hasToolUse, startedToolCalls, originalModel, &terminalUsage); err != nil {
+				if err := h.processResponsesSSELine(w, flusher, lineBuf, &contentIndex, &contentStarted, &reasoningStarted, &hasToolUse, startedToolCalls, toolArguments, originalModel, &terminalUsage); err != nil {
 					return err
 				}
 			}
@@ -879,6 +880,24 @@ func (h *StreamHandler) ProxyResponsesStream(
 				return ErrStreamIdle
 			}
 			return fmt.Errorf("failed to read stream: %w", err)
+		}
+	}
+
+	// Flush arguments for a tool call whose completion event was not delivered
+	// before the stream ended. This preserves partial Responses streams while
+	// still applying the same argument normalization as completed calls.
+	for toolID, blockIdx := range startedToolCalls {
+		arguments := normalizeToolArguments(toolArguments[toolID])
+		if arguments == "" || arguments == "{}" {
+			continue
+		}
+		event := types.MessageEvent{
+			Type:  "content_block_delta",
+			Index: &blockIdx,
+			Delta: &types.Delta{Type: "input_json_delta", PartialJSON: arguments},
+		}
+		if err := writeSSEEvent(w, event); err != nil {
+			return ErrClientDisconnected
 		}
 	}
 
@@ -946,6 +965,7 @@ func (h *StreamHandler) processResponsesSSELine(
 	reasoningStarted *bool,
 	hasToolUse *bool,
 	startedToolCalls map[string]int,
+	toolArguments map[string]string,
 	originalModel string,
 	terminalUsage **types.ResponsesUsage,
 ) error {
@@ -1024,6 +1044,7 @@ func (h *StreamHandler) processResponsesSSELine(
 		}
 		blockIdx := *contentIndex
 		startedToolCalls[fc.ID] = blockIdx
+		toolArguments[fc.ID] = fc.Arguments
 		*hasToolUse = true
 
 		toolID := fc.CallID
@@ -1049,20 +1070,10 @@ func (h *StreamHandler) processResponsesSSELine(
 
 	// Incremental arguments for an open function_call.
 	if chunk.Type == "response.function_call_arguments.delta" && chunk.Delta != "" {
-		if blockIdx, exists := startedToolCalls[chunk.ItemID]; exists {
-			delta := types.Delta{
-				Type:        "input_json_delta",
-				PartialJSON: chunk.Delta,
-			}
-			event := types.MessageEvent{
-				Type:  "content_block_delta",
-				Index: &blockIdx,
-				Delta: &delta,
-			}
-			if err := writeSSEEvent(w, event); err != nil {
-				return ErrClientDisconnected
-			}
-			flusher.Flush()
+		if _, exists := startedToolCalls[chunk.ItemID]; exists {
+			// Buffer the complete JSON argument so whitespace-suffixed keys can
+			// be repaired before Claude Code validates the tool call.
+			toolArguments[chunk.ItemID] += chunk.Delta
 		}
 	}
 
@@ -1073,6 +1084,21 @@ func (h *StreamHandler) processResponsesSSELine(
 			return nil
 		}
 		if blockIdx, exists := startedToolCalls[fc.ID]; exists {
+			arguments := fc.Arguments
+			if arguments == "" {
+				arguments = toolArguments[fc.ID]
+			}
+			arguments = normalizeToolArguments(arguments)
+			if arguments != "" && arguments != "{}" {
+				event := types.MessageEvent{
+					Type:  "content_block_delta",
+					Index: &blockIdx,
+					Delta: &types.Delta{Type: "input_json_delta", PartialJSON: arguments},
+				}
+				if err := writeSSEEvent(w, event); err != nil {
+					return ErrClientDisconnected
+				}
+			}
 			stopEvent := types.MessageEvent{
 				Type:  "content_block_stop",
 				Index: &blockIdx,
@@ -1081,6 +1107,7 @@ func (h *StreamHandler) processResponsesSSELine(
 				return ErrClientDisconnected
 			}
 			delete(startedToolCalls, fc.ID)
+			delete(toolArguments, fc.ID)
 			flusher.Flush()
 		}
 	}

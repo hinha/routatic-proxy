@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -834,7 +835,7 @@ func (h *StreamHandler) ProxyResponsesStream(
 	reasoningStarted := false
 	hasToolUse := false
 	startedToolCalls := make(map[string]int)
-	toolArguments := make(map[string]string)
+	toolArguments := make(map[string]*strings.Builder)
 	var terminalUsage *types.ResponsesUsage
 	readBuf := readBufPool.Get().(*[]byte)
 	defer readBufPool.Put(readBuf)
@@ -887,7 +888,7 @@ func (h *StreamHandler) ProxyResponsesStream(
 	// before the stream ended. This preserves partial Responses streams while
 	// still applying the same argument normalization as completed calls.
 	for toolID, blockIdx := range startedToolCalls {
-		arguments := normalizeToolArguments(toolArguments[toolID])
+		arguments := normalizeToolArguments(toolArguments[toolID].String())
 		if arguments == "" || arguments == "{}" {
 			continue
 		}
@@ -965,7 +966,7 @@ func (h *StreamHandler) processResponsesSSELine(
 	reasoningStarted *bool,
 	hasToolUse *bool,
 	startedToolCalls map[string]int,
-	toolArguments map[string]string,
+	toolArguments map[string]*strings.Builder,
 	originalModel string,
 	terminalUsage **types.ResponsesUsage,
 ) error {
@@ -1044,7 +1045,9 @@ func (h *StreamHandler) processResponsesSSELine(
 		}
 		blockIdx := *contentIndex
 		startedToolCalls[fc.ID] = blockIdx
-		toolArguments[fc.ID] = fc.Arguments
+		arguments := new(strings.Builder)
+		arguments.WriteString(fc.Arguments)
+		toolArguments[fc.ID] = arguments
 		*hasToolUse = true
 
 		toolID := fc.CallID
@@ -1073,7 +1076,7 @@ func (h *StreamHandler) processResponsesSSELine(
 		if _, exists := startedToolCalls[chunk.ItemID]; exists {
 			// Buffer the complete JSON argument so whitespace-suffixed keys can
 			// be repaired before Claude Code validates the tool call.
-			toolArguments[chunk.ItemID] += chunk.Delta
+			toolArguments[chunk.ItemID].WriteString(chunk.Delta)
 		}
 	}
 
@@ -1086,7 +1089,7 @@ func (h *StreamHandler) processResponsesSSELine(
 		if blockIdx, exists := startedToolCalls[fc.ID]; exists {
 			arguments := fc.Arguments
 			if arguments == "" {
-				arguments = toolArguments[fc.ID]
+				arguments = toolArguments[fc.ID].String()
 			}
 			arguments = normalizeToolArguments(arguments)
 			if arguments != "" && arguments != "{}" {

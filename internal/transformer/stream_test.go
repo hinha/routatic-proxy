@@ -1537,6 +1537,130 @@ func TestProxyResponsesStream_TrimsWhitespaceFromToolArgumentKeys(t *testing.T) 
 	}
 }
 
+func TestProxyResponsesStream_PreservesBufferedToolArguments(t *testing.T) {
+	for _, completion := range []string{"done arguments", "buffered done", "EOF"} {
+		for _, tt := range []struct {
+			name string
+			raw  string
+			want string
+		}{
+			{
+				name: "string escapes",
+				raw:  `{"text ":"\ud800 \u0061\/"}`,
+				want: `{"text":"\ud800 \u0061\/"}`,
+			},
+			{
+				name: "colliding keys",
+				raw:  `{" description":"A","description ":"B"}`,
+				want: `{" description":"A","description ":"B"}`,
+			},
+		} {
+			t.Run(completion+"/"+tt.name, func(t *testing.T) {
+				// Include an initial argument prefix and small deltas so escapes
+				// are split across events as well as buffered correctly.
+				added, err := json.Marshal(types.ResponsesChunk{
+					Type: "response.output_item.added",
+					Item: &types.ResponsesOutput{
+						Type: "function_call", ID: "fc_1", CallID: "call_1",
+						Name: "test", Arguments: tt.raw[:1],
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				lines := []string{string(added)}
+				for i := 1; i < len(tt.raw); i++ {
+					delta, err := json.Marshal(types.ResponsesChunk{
+						Type: "response.function_call_arguments.delta", ItemID: "fc_1",
+						Delta: tt.raw[i : i+1],
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					lines = append(lines, string(delta))
+				}
+				if completion != "EOF" {
+					item := &types.ResponsesOutput{Type: "function_call", ID: "fc_1"}
+					if completion == "done arguments" {
+						item.Arguments = tt.raw
+					}
+					done, err := json.Marshal(types.ResponsesChunk{
+						Type: "response.output_item.done", Item: item,
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					lines = append(lines, string(done), `{"type":"response.completed"}`)
+				}
+
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				w := newMockResponseWriter()
+				if err := NewStreamHandler().ProxyResponsesStream(w, sseLines(lines...), "test", ctx, 0, cancel); err != nil {
+					t.Fatal(err)
+				}
+				events := parseSSEEvents(t, w.buf.String())
+				if len(events) != 6 {
+					t.Fatalf("expected one complete tool call (6 events), got %d: %s", len(events), w.buf.String())
+				}
+				if delta := events[2].Delta; delta == nil || delta.Type != "input_json_delta" || delta.PartialJSON != tt.want {
+					t.Fatalf("tool input = %+v, want %s", delta, tt.want)
+				}
+				if events[3].Type != "content_block_stop" || events[4].Delta == nil ||
+					events[4].Delta.StopReason != "tool_use" || events[5].Type != "message_stop" {
+					t.Fatalf("incorrect tool completion: %s", w.buf.String())
+				}
+			})
+		}
+	}
+}
+
+// Small upstream deltas must not repeatedly copy the full accumulated input.
+// Compare B/op across payload sizes to detect quadratic allocation growth.
+func BenchmarkProxyResponsesStreamToolArguments(b *testing.B) {
+	for _, size := range []int{32 << 10, 128 << 10, 512 << 10} {
+		b.Run(fmt.Sprint(size), func(b *testing.B) {
+			args := `{"content":"` + strings.Repeat("x", size) + `"}`
+			lines := []string{
+				`{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"Write"}}`,
+			}
+			for offset := 0; offset < len(args); offset += 16 {
+				delta, err := json.Marshal(types.ResponsesChunk{
+					Type: "response.function_call_arguments.delta", ItemID: "fc_1",
+					Delta: args[offset:min(offset+16, len(args))],
+				})
+				if err != nil {
+					b.Fatal(err)
+				}
+				lines = append(lines, string(delta))
+			}
+			lines = append(lines,
+				`{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1"}}`,
+				`{"type":"response.completed"}`,
+			)
+			body := sseLines(lines...)
+			rawBody, err := io.ReadAll(body)
+			_ = body.Close()
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			b.SetBytes(int64(len(args)))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				ctx, cancel := context.WithCancel(context.Background())
+				err := NewStreamHandler().ProxyResponsesStream(
+					newMockResponseWriter(), io.NopCloser(bytes.NewReader(rawBody)), "test", ctx, 0, cancel,
+				)
+				cancel()
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func TestProxyResponsesStream_OverlappingToolCallsUseDistinctIndices(t *testing.T) {
 	handler := NewStreamHandler()
 	w := newMockResponseWriter()

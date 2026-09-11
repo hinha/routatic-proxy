@@ -200,7 +200,7 @@ func (t *ResponseTransformer) TransformResponsesResponse(
 			hasToolCall = true
 			inputJSON := json.RawMessage(`{}`)
 			if output.Arguments != "" {
-				inputJSON = json.RawMessage(output.Arguments)
+				inputJSON = json.RawMessage(normalizeToolArguments(output.Arguments))
 			}
 			contentBlocks = append(contentBlocks, types.ContentBlock{
 				Type:  "tool_use",

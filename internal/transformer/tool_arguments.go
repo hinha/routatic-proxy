@@ -1,7 +1,9 @@
 package transformer
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"strings"
 )
 
@@ -10,20 +12,33 @@ import (
 // keys such as "description " instead of "description", which makes Claude
 // Code reject an otherwise valid tool call during schema validation.
 //
+// Only keys are rewritten, so a value the provider already got right is
+// reproduced byte-for-byte. Decoding into float64 would round integers above
+// 2^53, and the default encoder escapes "<", ">" and "&" into \uXXXX.
+//
 // Invalid JSON is returned unchanged so the proxy does not hide a malformed
 // tool call behind a different error.
 func normalizeToolArguments(raw string) string {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+
 	var value any
-	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+	if err := decoder.Decode(&value); err != nil {
+		return raw
+	}
+	// Trailing content means the argument is not a single JSON value. Leave it
+	// untouched rather than silently keeping only the first one.
+	if _, err := decoder.Token(); err != io.EOF {
 		return raw
 	}
 
-	normalized := trimJSONObjectKeys(value)
-	encoded, err := json.Marshal(normalized)
-	if err != nil {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(trimJSONObjectKeys(value)); err != nil {
 		return raw
 	}
-	return string(encoded)
+	return strings.TrimRight(buf.String(), "\n")
 }
 
 func trimJSONObjectKeys(value any) any {
